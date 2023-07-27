@@ -19,7 +19,7 @@ open_lin_pid_t open_lin_data_layer_parity(open_lin_pid_t pid) {
     return result;
 }
 
-open_lin_checksum_t open_lin_data_layer_checksum(open_lin_pid_t pid, l_u8 lenght, const l_u8* data_ptr)
+open_lin_checksum_t open_lin_data_layer_checksum(open_lin_pid_t pid, l_u8 length, const l_u8* data_ptr)
 {
 	l_u8 i = 0;
 	l_u16 result;
@@ -32,7 +32,7 @@ open_lin_checksum_t open_lin_data_layer_checksum(open_lin_pid_t pid, l_u8 lenght
 		result = open_lin_data_layer_parity(pid);
 	}
 
-	for (i = 0; i < lenght; i++)
+	for (i = 0; i < length; i++)
 	{
 		result += data_ptr[i];
 		if (result > 0xFF)

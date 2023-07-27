@@ -17,7 +17,7 @@ open_lin_frame_slot_t slot_array[] =
 		{0x01,OPEN_LIN_FRAME_TYPE_TRANSMIT,sizeof(dataBuffer2),dataBuffer2}
 };
 
-const l_u8 lenght_of_slot_array = sizeof( slot_array ) / sizeof( open_lin_frame_slot_t );
+const l_u8 length_of_slot_array = sizeof( slot_array ) / sizeof( open_lin_frame_slot_t );
 
 void open_lin_master_dl_rx_callback(open_lin_frame_slot_t* slot){
 	printf("NOT USED IN SLAVE SHOULD BE FIXED!");
@@ -43,7 +43,7 @@ int main()
 	printf("OPEN_LIN slave start\n");
 
 	open_lin_hw_init();
-	open_lin_net_init(slot_array,lenght_of_slot_array);
+	open_lin_net_init(slot_array,length_of_slot_array);
 
 	while (1)
 	{

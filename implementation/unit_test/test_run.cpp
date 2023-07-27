@@ -25,7 +25,7 @@ open_lin_frame_slot_t slot_array[] =
 };
 
 
-const l_u8 lenght_of_slot_array = sizeof( slot_array ) / sizeof( open_lin_frame_slot_t );
+const l_u8 length_of_slot_array = sizeof( slot_array ) / sizeof( open_lin_frame_slot_t );
 
 
 }
@@ -43,16 +43,16 @@ TEST_CASE("calc_checksum", "[open_lin_data_layer]" ) {
 
 	t_open_lin_data_layer_frame frame;
 	l_u8 data[] = {0x22,0xAA} ;
-	frame.lenght = sizeof(data);
+	frame.length = sizeof(data);
 	frame.data_ptr = data;
 	frame.pid = 0x15;
-	CHECK((uint16_t)open_lin_data_layer_checksum(frame.pid,frame.lenght,frame.data_ptr) == (uint16_t)0xDD);
+	CHECK((uint16_t)open_lin_data_layer_checksum(frame.pid,frame.length,frame.data_ptr) == (uint16_t)0xDD);
 
 	l_u8 data2[] = {0x11} ;
-	frame.lenght = sizeof(data2);
+	frame.length = sizeof(data2);
 	frame.data_ptr = data2;
 	frame.pid = 0x01;
-	CHECK((uint16_t)open_lin_data_layer_checksum(frame.pid,frame.lenght,frame.data_ptr) == (uint16_t)0x2D);
+	CHECK((uint16_t)open_lin_data_layer_checksum(frame.pid,frame.length,frame.data_ptr) == (uint16_t)0x2D);
 }
 
 extern "C"{
@@ -63,7 +63,7 @@ extern t_open_lin_error get_and_clear_sim_error();
 }
 
 TEST_CASE("slave break detection", "[open_lin_slave]" ) {
-	open_lin_net_init(slot_array,lenght_of_slot_array);
+	open_lin_net_init(slot_array,length_of_slot_array);
 	open_lin_slave_reset();
 	/* first brake ok */
 //	SECTION( "sec brake cause err wait for sync" ){

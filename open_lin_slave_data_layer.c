@@ -22,7 +22,7 @@ static l_bool open_lin_slave_set_lin_frame(t_open_lin_data_layer_frame *frame){
 	open_lin_frame_slot_t *frame_slot = open_lin_net_get_slot(frame->pid);
 	if (frame_slot != OPEN_LIN_NET_SLOT_EMPTY)
 	{
-		frame->lenght = frame_slot->data_length;
+		frame->length = frame_slot->data_length;
 		frame->data_ptr = frame_slot->data_ptr;
 		if (frame_slot->frame_type == OPEN_LIN_FRAME_TYPE_TRANSMIT)
 		{
@@ -67,7 +67,7 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
         #else
 		open_lin_slave_state = OPEN_LIN_SLAVE_SYNC_RX;
         #endif
-        #ifdef OPEN_LIN_AUTO_BAUND
+        #ifdef OPEN_LIN_AUTO_BAUD
 			open_lin_hw_set_auto_baud();
 		#endif
 	} else
@@ -103,8 +103,8 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 					if (open_lin_slave_state == OPEN_LIN_SLAVE_DATA_TX)
 					{
 						open_lin_data_layer_frame.checksum = open_lin_data_layer_checksum(open_lin_data_layer_frame.pid,
-																open_lin_data_layer_frame.lenght, open_lin_data_layer_frame.data_ptr);
-						if ((open_lin_hw_tx_data(open_lin_data_layer_frame.data_ptr, open_lin_data_layer_frame.lenght) == l_false) ||
+																open_lin_data_layer_frame.length, open_lin_data_layer_frame.data_ptr);
+						if ((open_lin_hw_tx_data(open_lin_data_layer_frame.data_ptr, open_lin_data_layer_frame.length) == l_false) ||
 						   (open_lin_hw_tx_data(&open_lin_data_layer_frame.checksum, (l_u8)sizeof(open_lin_data_layer_frame.checksum)) == l_false))
 						{
 							open_lin_error_handler(OPEN_LIN_SLAVE_ERROR_HW_TX);
@@ -124,7 +124,7 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 			}
 			case (OPEN_LIN_SLAVE_DATA_RX):
 			{
-				if (open_lin_slave_state_data_count < open_lin_data_layer_frame.lenght)
+				if (open_lin_slave_state_data_count < open_lin_data_layer_frame.length)
 				{
 					open_lin_slave_data_buff[open_lin_slave_state_data_count] = rx_byte;
 					open_lin_slave_state_data_count ++;
@@ -132,10 +132,10 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 				{
 					/* checksum calculation */
 					if (rx_byte == open_lin_data_layer_checksum(open_lin_data_layer_frame.pid,
-							open_lin_data_layer_frame.lenght, open_lin_slave_data_buff))
+							open_lin_data_layer_frame.length, open_lin_slave_data_buff))
 					{
 						/* valid checksum, copy frame from internal buffer*/
-						open_lin_memcpy(open_lin_data_layer_frame.data_ptr,open_lin_slave_data_buff,open_lin_data_layer_frame.lenght);
+						open_lin_memcpy(open_lin_data_layer_frame.data_ptr,open_lin_slave_data_buff,open_lin_data_layer_frame.length);
 						open_lin_net_rx_handler(open_lin_data_layer_frame.pid);
 					} else
 					{
