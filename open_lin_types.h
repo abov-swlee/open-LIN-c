@@ -6,7 +6,6 @@
 #ifndef OPEN_LIN_OPEN_LIN_TYPES_H_
 #define OPEN_LIN_OPEN_LIN_TYPES_H_
 
-#include "open_lin_cfg.h"
 #include <string.h>
 #include <stdbool.h>
 
