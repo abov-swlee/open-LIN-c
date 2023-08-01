@@ -31,4 +31,6 @@ void open_lin_slave_reset(void);
  */
 void open_lin_slave_rx_header(l_u8 rx_byte);
 
+void open_lin_slave_set_state_callback(void (*callback)(t_open_lin_slave_state new_state));
+
 #endif /* OPEN_LIN_SLAVE_DATA_LAYER_H_ */
