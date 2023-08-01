@@ -11,13 +11,9 @@
 #include "open_lin_hw.h"
 #include "open_lin_master_data_layer.h"
 
-typedef enum {
-	OPEN_LIN_MASTER_IDLE,
-	OPEN_LIN_MASTER_DATA_RX,
-	OPEN_LIN_MASTER_TX_DATA,
-} t_open_lin_master_state;
-
 static t_open_lin_master_state lin_master_state;
+static void lin_master_state_callback_dummy(t_open_lin_master_state new_state){}
+static void (*lin_master_state_callback)(t_open_lin_master_state);
 static l_u8 master_rx_count = 0;
 static l_u8 master_table_index = 0;
 static t_master_frame_table_item *master_frame_table;
@@ -32,6 +28,7 @@ static void open_lin_master_goto_idle(l_bool next_item)
 {
 	master_rx_count = 0;
 	lin_master_state = OPEN_LIN_MASTER_IDLE;
+	lin_master_state_callback(lin_master_state);
 	time_passed_since_last_frame_ms = 0;
 	if (next_item)
 	{
@@ -46,6 +43,7 @@ void open_lin_master_dl_init(t_master_frame_table_item *p_master_frame_table, l_
 {
 	master_frame_table = p_master_frame_table;
 	master_frame_table_size = p_master_frame_table_size;
+	lin_master_state_callback = lin_master_state_callback_dummy;
 	open_lin_master_goto_idle(l_false);
 }
 
@@ -135,9 +133,11 @@ void open_lin_master_dl_handler(l_u8 ms_passed)
 					if (master_table_item->slot.frame_type == OPEN_LIN_FRAME_TYPE_TRANSMIT)
 					{
 						lin_master_state = OPEN_LIN_MASTER_TX_DATA;
+						lin_master_state_callback(lin_master_state);
 					} else
 					{
 						lin_master_state = OPEN_LIN_MASTER_DATA_RX;
+						lin_master_state_callback(lin_master_state);
 						master_rx_count = 0;
 						open_lin_set_rx_enabled(true);
 					}
@@ -145,6 +145,7 @@ void open_lin_master_dl_handler(l_u8 ms_passed)
 				{
 					open_lin_error_handler(OPEN_LIN_MASTER_ERROR_HEADER_TX);
 					lin_master_state = OPEN_LIN_MASTER_IDLE;
+					lin_master_state_callback(lin_master_state);
 				}
 			}
 		} else
@@ -181,6 +182,7 @@ void open_lin_master_dl_handler(l_u8 ms_passed)
 				{
 					open_lin_error_handler(OPEN_LIN_MASTER_ERROR_DATA_TX);
 					lin_master_state = OPEN_LIN_MASTER_IDLE;
+					lin_master_state_callback(lin_master_state);
 				}
 				break;
 			}
@@ -193,5 +195,8 @@ void open_lin_master_dl_handler(l_u8 ms_passed)
 	}
 }
 
-
+void open_lin_master_dl_set_state_callback(void (*callback)(t_open_lin_master_state new_state))
+{
+	lin_master_state_callback = callback;
+}
 
