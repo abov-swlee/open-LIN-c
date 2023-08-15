@@ -11,8 +11,7 @@
 #include "open_lin_types.h"
 #include "open_lin_network_layer.h"
 typedef struct {
-	uint16_t offset_us;
-	uint16_t response_wait_us;
+	uint32_t frame_slot_us;
 	open_lin_frame_slot_t slot;
 } t_master_frame_table_item;
 
@@ -24,7 +23,7 @@ typedef enum {
 
 void open_lin_master_dl_init(t_master_frame_table_item *p_master_frame_table, l_u8 p_master_frame_table_size);
 l_bool open_lin_master_dl_rx(l_u8 rx_byte);
-void open_lin_master_dl_handler(l_u16 us_passed);
+void open_lin_master_dl_handler(l_u32 us_passed);
 void open_lin_master_dl_rx_callback(open_lin_frame_slot_t* slot);
 void open_lin_master_dl_set_state_callback(void (*callback)(t_open_lin_master_state new_state));
 
