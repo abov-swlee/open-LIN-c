@@ -14,21 +14,28 @@
 static t_open_lin_master_state lin_master_state;
 static void lin_master_state_callback_dummy(t_open_lin_master_state new_state){}
 static void (*lin_master_state_callback)(t_open_lin_master_state);
+
 static l_u8 master_rx_count = 0;
 static l_u8 master_table_index = 0;
 static t_master_frame_table_item *master_frame_table;
 static l_u8 master_frame_table_size = 0;
+
 static l_u32 frame_start_time_us = 0;
 
 static void open_lin_master_goto_idle(l_bool next_item);
 static void data_layer_next_item(void);
 static t_master_frame_table_item* get_current_item(void);
 
+static void open_lin_master_set_state(t_open_lin_master_state new_state)
+{
+	lin_master_state = new_state;
+	lin_master_state_callback(lin_master_state);
+}
+
 static void open_lin_master_goto_idle(l_bool next_item)
 {
 	master_rx_count = 0;
-	lin_master_state = OPEN_LIN_MASTER_IDLE;
-	lin_master_state_callback(lin_master_state);
+	open_lin_master_set_state(OPEN_LIN_MASTER_IDLE);
 	if (next_item)
 	{
 		data_layer_next_item();
@@ -124,24 +131,22 @@ void open_lin_master_dl_handler()
 		if (lin_master_state == OPEN_LIN_MASTER_IDLE)
 		{
 			frame_start_time_us = open_lin_hw_get_time_us();
+
 			if (open_lin_master_data_tx_header(&master_table_item->slot) == l_true)
 			{
 				if (master_table_item->slot.frame_type == OPEN_LIN_FRAME_TYPE_TRANSMIT)
 				{
-					lin_master_state = OPEN_LIN_MASTER_TX_DATA;
-					lin_master_state_callback(lin_master_state);
+					open_lin_master_set_state(OPEN_LIN_MASTER_TX_DATA);
 				} else
 				{
-					lin_master_state = OPEN_LIN_MASTER_DATA_RX;
-					lin_master_state_callback(lin_master_state);
+					open_lin_master_set_state(OPEN_LIN_MASTER_DATA_RX);
 					master_rx_count = 0;
 					open_lin_set_rx_enabled(true);
 				}
 			} else
 			{
 				open_lin_error_handler(OPEN_LIN_MASTER_ERROR_HEADER_TX);
-				lin_master_state = OPEN_LIN_MASTER_IDLE;
-				lin_master_state_callback(lin_master_state);
+				open_lin_master_set_state(OPEN_LIN_MASTER_IDLE);
 			}
 		} else
 		{
@@ -165,9 +170,9 @@ void open_lin_master_dl_handler()
 			case OPEN_LIN_MASTER_DATA_RX:
 			{
 				l_u8 i = 0;
-				l_u8 len = master_table_item->slot.data_length;
+				l_u8 len = 1 + master_table_item->slot.data_length; // extra 1 bytes for checksum
 				for (i = 0; i < len; i++) {
-					const l_u32 read_timeout = 100;
+					const l_u32 read_timeout = 1000;
 					l_bool frame_timeout = false;
 					l_u8 bytes_read = 0;
 					do {
@@ -194,8 +199,7 @@ void open_lin_master_dl_handler()
 				} else
 				{
 					open_lin_error_handler(OPEN_LIN_MASTER_ERROR_DATA_TX);
-					lin_master_state = OPEN_LIN_MASTER_IDLE;
-					lin_master_state_callback(lin_master_state);
+					open_lin_master_set_state(OPEN_LIN_MASTER_IDLE);
 				}
 				break;
 			}
