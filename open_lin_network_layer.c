@@ -67,3 +67,8 @@ void open_lin_net_rx_handler(open_lin_pid_t pid) {
 	open_lin_frame_slot_t* slot = open_lin_net_get_slot(pid);
 	open_lin_on_rx_frame(slot);
 };
+
+void open_lin_net_tx_handler(open_lin_pid_t pid) {
+	open_lin_frame_slot_t* slot = open_lin_net_get_slot(pid);
+	open_lin_on_tx_frame(slot);
+}

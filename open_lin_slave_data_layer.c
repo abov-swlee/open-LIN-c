@@ -112,6 +112,7 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 				{
 					if (open_lin_slave_state == OPEN_LIN_SLAVE_DATA_TX)
 					{
+						open_lin_net_tx_handler(open_lin_data_layer_frame.pid);
 						open_lin_data_layer_frame.checksum = open_lin_data_layer_checksum(open_lin_data_layer_frame.pid,
 																open_lin_data_layer_frame.length, open_lin_data_layer_frame.data_ptr);
 						if ((open_lin_hw_tx_data(open_lin_data_layer_frame.data_ptr, open_lin_data_layer_frame.length) == l_false) ||
