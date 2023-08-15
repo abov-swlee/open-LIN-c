@@ -18,7 +18,7 @@ static l_u8 master_rx_count = 0;
 static l_u8 master_table_index = 0;
 static t_master_frame_table_item *master_frame_table;
 static l_u8 master_frame_table_size = 0;
-static l_u32 time_passed_since_last_frame_us = 0;
+static l_u32 frame_start_time_us = 0;
 
 static void open_lin_master_goto_idle(l_bool next_item);
 static void data_layer_next_item(void);
@@ -115,20 +115,15 @@ l_bool open_lin_master_dl_rx(l_u8 rx_byte)
 }
 
 
-void open_lin_master_dl_handler(l_u32 us_passed)
+void open_lin_master_dl_handler()
 {
 	t_master_frame_table_item* master_table_item = get_current_item();
 
 	if (master_frame_table_size > 0u)
 	{
-		time_passed_since_last_frame_us += us_passed;
-		if (lin_master_state != OPEN_LIN_MASTER_IDLE && time_passed_since_last_frame_us > master_table_item->frame_slot_us) {
-			open_lin_error_handler(OPEN_LIN_MASTER_ERROR_FRAME_SLOT_TIMEOUT);
-			open_lin_master_goto_idle(l_true);
-		}
 		if (lin_master_state == OPEN_LIN_MASTER_IDLE)
 		{
-			time_passed_since_last_frame_us = 0;
+			frame_start_time_us = open_lin_hw_get_time_us();
 			if (open_lin_master_data_tx_header(&master_table_item->slot) == l_true)
 			{
 				if (master_table_item->slot.frame_type == OPEN_LIN_FRAME_TYPE_TRANSMIT)
@@ -150,8 +145,15 @@ void open_lin_master_dl_handler(l_u32 us_passed)
 			}
 		} else
 		{
-			/* do nothing */
+			l_u32 frame_time_passed = open_lin_hw_get_time_us() - frame_start_time_us;
+			if (frame_time_passed > master_table_item->frame_slot_us)
+			{
+				open_lin_error_handler(OPEN_LIN_MASTER_ERROR_FRAME_SLOT_TIMEOUT);
+				open_lin_master_goto_idle(l_true);
+				return;
+			}
 		}
+		
 		switch (lin_master_state)
 		{
 			case OPEN_LIN_MASTER_IDLE:
@@ -162,7 +164,25 @@ void open_lin_master_dl_handler(l_u32 us_passed)
 			}
 			case OPEN_LIN_MASTER_DATA_RX:
 			{
-				/* data reception handled by open_lin_master_data_layer_rx */
+				l_u8 i = 0;
+				l_u8 len = master_table_item->slot.data_length;
+				for (i = 0; i < len; i++) {
+					const l_u32 read_timeout = 100;
+					l_bool frame_timeout = false;
+					l_u8 bytes_read = 0;
+					do {
+						bytes_read = open_lin_hw_rx_byte(&master_table_item->slot.data_ptr[i], read_timeout);
+						frame_timeout = (open_lin_hw_get_time_us() - frame_start_time_us) > master_frame_table->frame_slot_us;
+					} while (bytes_read <= 0 && !frame_timeout);
+					if (frame_timeout) {
+						open_lin_error_handler(OPEN_LIN_MASTER_ERROR_FRAME_SLOT_TIMEOUT);
+						open_lin_master_goto_idle(l_true);
+						return;
+					}
+					else {
+						open_lin_master_dl_rx(master_table_item->slot.data_ptr[i]);
+					}
+				}
 				break;
 			}
 
@@ -193,7 +213,7 @@ void open_lin_master_dl_set_state_callback(void (*callback)(t_open_lin_master_st
 	lin_master_state_callback = callback;
 }
 
-l_u32 open_lin_master_dl_get_frame_slot_time_passed_us()
+l_u32 open_lin_master_dl_get_frame_start_time_us()
 {
-	return time_passed_since_last_frame_us;
+	return frame_start_time_us;
 }
