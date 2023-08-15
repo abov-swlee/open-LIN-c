@@ -18,7 +18,7 @@ static l_u8 master_rx_count = 0;
 static l_u8 master_table_index = 0;
 static t_master_frame_table_item *master_frame_table;
 static l_u8 master_frame_table_size = 0;
-static l_u16 time_passed_since_last_frame_ms = 0;
+static l_u32 time_passed_since_last_frame_us = 0;
 
 static void open_lin_master_goto_idle(l_bool next_item);
 static void data_layer_next_item(void);
@@ -29,7 +29,7 @@ static void open_lin_master_goto_idle(l_bool next_item)
 	master_rx_count = 0;
 	lin_master_state = OPEN_LIN_MASTER_IDLE;
 	lin_master_state_callback(lin_master_state);
-	time_passed_since_last_frame_ms = 0;
+	time_passed_since_last_frame_us = 0;
 	if (next_item)
 	{
 		data_layer_next_item();
@@ -116,18 +116,18 @@ l_bool open_lin_master_dl_rx(l_u8 rx_byte)
 }
 
 
-void open_lin_master_dl_handler(l_u8 ms_passed)
+void open_lin_master_dl_handler(l_u16 us_passed)
 {
 	t_master_frame_table_item* master_table_item = get_current_item();
 
 	if (master_frame_table_size > 0u)
 	{
-		time_passed_since_last_frame_ms += ms_passed;
+		time_passed_since_last_frame_us += us_passed;
 		if (lin_master_state == OPEN_LIN_MASTER_IDLE)
 		{
-			if ((master_table_item->offset_ms) < time_passed_since_last_frame_ms)
+			if ((master_table_item->offset_us) < time_passed_since_last_frame_us)
 			{
-				time_passed_since_last_frame_ms = 0;
+				time_passed_since_last_frame_us = 0;
 				if (open_lin_master_data_tx_header(&master_table_item->slot) == l_true)
 				{
 					if (master_table_item->slot.frame_type == OPEN_LIN_FRAME_TYPE_TRANSMIT)
@@ -162,7 +162,7 @@ void open_lin_master_dl_handler(l_u8 ms_passed)
 			}
 			case OPEN_LIN_MASTER_DATA_RX:
 			{
-				if (time_passed_since_last_frame_ms > master_table_item->response_wait_ms)
+				if (time_passed_since_last_frame_us > master_table_item->response_wait_us)
 				{
 					open_lin_error_handler(OPEN_LIN_MASTER_ERROR_DATA_RX_TIMEOUT);
 					open_lin_master_goto_idle(l_true);

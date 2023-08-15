@@ -15,6 +15,7 @@
 typedef bool l_bool;
 typedef uint8_t l_u8 ;
 typedef uint16_t l_u16;
+typedef uint32_t l_u32;
 
 #define l_true true
 #define l_false false
