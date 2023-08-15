@@ -29,7 +29,6 @@ static void open_lin_master_goto_idle(l_bool next_item)
 	master_rx_count = 0;
 	lin_master_state = OPEN_LIN_MASTER_IDLE;
 	lin_master_state_callback(lin_master_state);
-	time_passed_since_last_frame_us = 0;
 	if (next_item)
 	{
 		data_layer_next_item();
@@ -123,10 +122,9 @@ void open_lin_master_dl_handler(l_u32 us_passed)
 	if (master_frame_table_size > 0u)
 	{
 		time_passed_since_last_frame_us += us_passed;
-		if (time_passed_since_last_frame_us > master_table_item->frame_slot_us) {
-			open_lin_error_handler(OPEN_LIN_MASTER_ERROR_FRAMESLOT_TIMEOUT);
-			lin_master_state = OPEN_LIN_MASTER_IDLE;
-			lin_master_state_callback(lin_master_state);
+		if (lin_master_state != OPEN_LIN_MASTER_IDLE && time_passed_since_last_frame_us > master_table_item->frame_slot_us) {
+			open_lin_error_handler(OPEN_LIN_MASTER_ERROR_FRAME_SLOT_TIMEOUT);
+			open_lin_master_goto_idle(l_true);
 		}
 		if (lin_master_state == OPEN_LIN_MASTER_IDLE)
 		{
@@ -195,3 +193,7 @@ void open_lin_master_dl_set_state_callback(void (*callback)(t_open_lin_master_st
 	lin_master_state_callback = callback;
 }
 
+l_u32 open_lin_master_dl_get_frame_slot_time_passed_us()
+{
+	return time_passed_since_last_frame_us;
+}
