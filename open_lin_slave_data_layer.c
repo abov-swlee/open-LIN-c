@@ -14,10 +14,17 @@
  */
 
 static t_open_lin_slave_state open_lin_slave_state;
-static void open_lin_slave_state_callback_dummy(t_open_lin_slave_state new_state) {}
-static void (*open_lin_slave_state_callback)(t_open_lin_slave_state new_state) = open_lin_slave_state_callback_dummy;
+static void (*open_lin_slave_state_callback)(t_open_lin_slave_state new_state);
 
 static l_u8 open_lin_slave_state_data_count;
+
+static void open_lin_slave_set_state(t_open_lin_slave_state new_state)
+{
+	open_lin_slave_state = new_state;
+	if (open_lin_slave_state_callback) {
+		open_lin_slave_state_callback(open_lin_slave_state);
+	}
+}
 
 static l_bool open_lin_slave_set_lin_frame(t_open_lin_data_layer_frame *frame){
 	l_bool result = false;
@@ -28,12 +35,10 @@ static l_bool open_lin_slave_set_lin_frame(t_open_lin_data_layer_frame *frame){
 		frame->data_ptr = frame_slot->data_ptr;
 		if (frame_slot->frame_type == OPEN_LIN_FRAME_TYPE_TRANSMIT)
 		{
-			open_lin_slave_state = OPEN_LIN_SLAVE_DATA_TX;
-			open_lin_slave_state_callback(open_lin_slave_state);
+			open_lin_slave_set_state(OPEN_LIN_SLAVE_DATA_TX);
 		} else
 		{
-			open_lin_slave_state = OPEN_LIN_SLAVE_DATA_RX;
-			open_lin_slave_state_callback(open_lin_slave_state);
+			open_lin_slave_set_state(OPEN_LIN_SLAVE_DATA_RX);
 		}
 		result = true;
 	} else
@@ -49,8 +54,7 @@ void open_lin_slave_init(void)
 }
 
 void open_lin_slave_reset(void){
-	open_lin_slave_state = OPEN_LIN_SLAVE_IDLE;
-	open_lin_slave_state_callback(open_lin_slave_state);
+	open_lin_slave_set_state(OPEN_LIN_SLAVE_IDLE);
 	open_lin_slave_state_data_count = 0;
 }
 
@@ -68,18 +72,16 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 			/* do nothing, go to SYNC rx anyway*/
 		}
         #ifdef OPEN_LIN_HW_BREAK_IS_SYNCH_BYTE
-        open_lin_slave_state = OPEN_LIN_SLAVE_PID_RX;
-		open_lin_slave_state_callback(open_lin_slave_state);
+		open_lin_slave_set_state(OPEN_LIN_SLAVE_PID_RX);
         #else
-		open_lin_slave_state = OPEN_LIN_SLAVE_SYNC_RX;
-		open_lin_slave_state_callback(open_lin_slave_state);
+		open_lin_slave_set_state(OPEN_LIN_SLAVE_SYNC_RX);
         #endif
         #ifdef OPEN_LIN_AUTO_BAUD
 			open_lin_hw_set_auto_baud();
 		#endif
 	} else
 	{
-		switch (open_lin_slave_state){
+		switch (open_lin_slave_state) {
 			case (OPEN_LIN_SLAVE_SYNC_RX):
 			{
 				/* synch byte reception do nothing */
@@ -90,8 +92,7 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 					break;
 				} else
 				{
-					open_lin_slave_state = OPEN_LIN_SLAVE_PID_RX;
-					open_lin_slave_state_callback(open_lin_slave_state);
+					open_lin_slave_set_state(OPEN_LIN_SLAVE_PID_RX);
                     break;
 				}				
 			}
@@ -149,7 +150,7 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 							open_lin_data_layer_frame.length, open_lin_slave_data_buff))
 					{
 						/* valid checksum, copy frame from internal buffer*/
-						open_lin_memcpy(open_lin_data_layer_frame.data_ptr,open_lin_slave_data_buff,open_lin_data_layer_frame.length);
+						open_lin_memcpy(open_lin_data_layer_frame.data_ptr, open_lin_slave_data_buff, open_lin_data_layer_frame.length);
 						open_lin_net_rx_handler(open_lin_data_layer_frame.pid);
 					} else
 					{
@@ -161,9 +162,11 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 				break;
 			}
 			default:
+			{
 				open_lin_error_handler(OPEN_LIN_SLAVE_ERROR_INVALID_DATA_RX);
 				open_lin_slave_reset();
 				break;
+			}
 		}
 	}
 }

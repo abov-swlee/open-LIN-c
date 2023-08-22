@@ -12,7 +12,6 @@
 #include "open_lin_master_data_layer.h"
 
 static t_open_lin_master_state lin_master_state;
-static void lin_master_state_callback_dummy(t_open_lin_master_state new_state){}
 static void (*lin_master_state_callback)(t_open_lin_master_state);
 
 static l_u8 master_rx_count = 0;
@@ -29,7 +28,9 @@ static t_master_frame_table_item* get_current_item(void);
 static void open_lin_master_set_state(t_open_lin_master_state new_state)
 {
 	lin_master_state = new_state;
-	lin_master_state_callback(lin_master_state);
+	if (lin_master_state_callback) {
+		lin_master_state_callback(lin_master_state);
+	}
 }
 
 static void open_lin_master_goto_idle(l_bool next_item)
@@ -49,7 +50,6 @@ void open_lin_master_dl_init(t_master_frame_table_item *p_master_frame_table, l_
 {
 	master_frame_table = p_master_frame_table;
 	master_frame_table_size = p_master_frame_table_size;
-	lin_master_state_callback = lin_master_state_callback_dummy;
 	open_lin_master_goto_idle(l_false);
 }
 
