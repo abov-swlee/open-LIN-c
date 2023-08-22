@@ -43,6 +43,8 @@ static void open_lin_master_goto_idle(l_bool next_item)
 	} else {
 		/* do nothing */
 	}
+
+	open_lin_set_rx_enabled(l_false); // Prevent receiving data transmitted by itself(Master)
 }
 
 
@@ -141,7 +143,7 @@ void open_lin_master_dl_handler()
 				{
 					open_lin_master_set_state(OPEN_LIN_MASTER_DATA_RX);
 					master_rx_count = 0;
-					open_lin_set_rx_enabled(true);
+					open_lin_set_rx_enabled(l_true); // Ready for receiving from Slave
 				}
 			} else
 			{
@@ -163,7 +165,6 @@ void open_lin_master_dl_handler()
 		{
 			case OPEN_LIN_MASTER_IDLE:
 			{
-				open_lin_set_rx_enabled(false);
 				/* do nothing */
 				break;
 			}
