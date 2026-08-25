@@ -8,6 +8,7 @@
 
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #define OPEN_LIN_MAX_FRAME_LEN 8u
 #define OPEN_LIN_MAX_FRAME_CHECK_SUM_SIZE 1u
