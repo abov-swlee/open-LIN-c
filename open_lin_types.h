@@ -41,6 +41,18 @@ typedef enum {
 	OPEN_LIN_FRAME_TYPE_RECEIVE
 } open_lin_frame_type_t;
 
+/**
+ * @brief Per-frame checksum model, LDF "protocol_version"/"checksum" property.
+ *        Diagnostic frames (0x3C/0x3D) always use classic regardless of this
+ *        setting - see open_lin_data_layer_checksum(). ENHANCED=0 is the
+ *        default so existing open_lin_frame_slot_t initializers that omit
+ *        this field keep their prior (enhanced) behavior unchanged.
+ */
+typedef enum {
+	OPEN_LIN_CHECKSUM_ENHANCED = 0, /**< LIN 2.x default: parity(pid) + data bytes */
+	OPEN_LIN_CHECKSUM_CLASSIC        /**< LIN 1.x: data bytes only */
+} open_lin_checksum_type_t;
+
 typedef enum {
 	OPEN_LIN_NO_ERROR,
 	OPEN_LIN_SLAVE_ERROR_INVALID_DATA_RX,

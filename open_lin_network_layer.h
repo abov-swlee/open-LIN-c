@@ -17,6 +17,7 @@ typedef struct {
 	open_lin_frame_type_t frame_type;
 	l_u8 data_length;
 	l_u8 *data_ptr;
+	open_lin_checksum_type_t checksum_type; /**< optional: defaults to OPEN_LIN_CHECKSUM_ENHANCED (0) when omitted */
 } open_lin_frame_slot_t;
 
 #ifdef OPEN_LIN_DYNAMIC_IDS

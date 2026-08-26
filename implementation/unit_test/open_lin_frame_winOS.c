@@ -4,7 +4,7 @@
  *  Created on: 25.01.2018
  *      Author: ay7vi2
  */
-#include "../../open_lin_cfg.h"
+#include "../open_lin_cfg.h"
 #include "../../open_lin_data_layer.h"
 #include "../../open_lin_hw.h"
 #include "../../open_lin_network_layer.h"

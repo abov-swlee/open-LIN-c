@@ -91,7 +91,7 @@ l_bool open_lin_master_data_tx_data(open_lin_frame_slot_t *slot)
 		result = (open_lin_hw_tx_byte(slot->data_ptr[i])) && result;
 	}
 
-	result = (open_lin_hw_tx_byte(open_lin_data_layer_checksum(slot->pid, slot->data_length, slot->data_ptr))) && result;
+	result = (open_lin_hw_tx_byte(open_lin_data_layer_checksum(slot->pid, slot->checksum_type, slot->data_length, slot->data_ptr))) && result;
 	return result;
 }
 
@@ -110,7 +110,7 @@ l_bool open_lin_master_dl_rx(l_u8 rx_byte)
 			pending = l_true;
 		} else
 		{
-			if (rx_byte == open_lin_data_layer_checksum(slot->pid,slot->data_length,frame_tmp_buffer))
+			if (rx_byte == open_lin_data_layer_checksum(slot->pid,slot->checksum_type,slot->data_length,frame_tmp_buffer))
 			{
 				(void)open_lin_memcpy(slot->data_ptr,frame_tmp_buffer,slot->data_length);
 #ifdef OPEN_LIN_TRANSPORT_LAYER

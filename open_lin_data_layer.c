@@ -19,13 +19,15 @@ open_lin_pid_t open_lin_data_layer_parity(open_lin_pid_t pid) {
     return result;
 }
 
-open_lin_checksum_t open_lin_data_layer_checksum(open_lin_pid_t pid, l_u8 length, const l_u8* data_ptr)
+open_lin_checksum_t open_lin_data_layer_checksum(open_lin_pid_t pid, open_lin_checksum_type_t checksum_type, l_u8 length, const l_u8* data_ptr)
 {
 	l_u8 i = 0;
 	l_u16 result;
 
-	/* diagnostic request have classic checksum */
-	if ((pid == OPEN_LIN_DIAG_REQUEST) || (pid == OPEN_LIN_DIAG_RESPONSE))
+	/* diagnostic frames always use classic checksum regardless of checksum_type -
+	 * this is a protocol rule (LIN-Spec 2.2A Section 2.3.1.2), not an LDF choice,
+	 * so it overrides whatever the caller's slot happens to be configured with. */
+	if ((pid == OPEN_LIN_DIAG_REQUEST) || (pid == OPEN_LIN_DIAG_RESPONSE) || (checksum_type == OPEN_LIN_CHECKSUM_CLASSIC))
 	{
 		result = 0;
 	} else {

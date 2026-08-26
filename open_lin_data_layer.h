@@ -19,9 +19,10 @@ typedef struct {
 	l_u8 length;
 	l_u8* data_ptr;
 	open_lin_checksum_t checksum;
+	open_lin_checksum_type_t checksum_type;
 } t_open_lin_data_layer_frame;
 
 extern open_lin_pid_t open_lin_data_layer_parity(open_lin_pid_t pid);
-extern open_lin_checksum_t open_lin_data_layer_checksum(open_lin_pid_t pid, l_u8 length,const l_u8* data_ptr);
+extern open_lin_checksum_t open_lin_data_layer_checksum(open_lin_pid_t pid, open_lin_checksum_type_t checksum_type, l_u8 length, const l_u8* data_ptr);
 
 #endif /* OPEN_LIN_OPEN_LIN_DATA_LAYER_H_ */

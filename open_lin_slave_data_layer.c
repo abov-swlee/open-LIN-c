@@ -33,6 +33,7 @@ static l_bool open_lin_slave_set_lin_frame(t_open_lin_data_layer_frame *frame){
 	{
 		frame->length = frame_slot->data_length;
 		frame->data_ptr = frame_slot->data_ptr;
+		frame->checksum_type = frame_slot->checksum_type;
 		if (frame_slot->frame_type == OPEN_LIN_FRAME_TYPE_TRANSMIT)
 		{
 			open_lin_slave_set_state(OPEN_LIN_SLAVE_DATA_TX);
@@ -116,7 +117,7 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 					{
 						open_lin_set_rx_enabled(l_false); // Prevent receiving data transmitted by itself(Slave)
 						open_lin_net_tx_handler(open_lin_data_layer_frame.pid);
-						open_lin_data_layer_frame.checksum = open_lin_data_layer_checksum(open_lin_data_layer_frame.pid,
+						open_lin_data_layer_frame.checksum = open_lin_data_layer_checksum(open_lin_data_layer_frame.pid, open_lin_data_layer_frame.checksum_type,
 																open_lin_data_layer_frame.length, open_lin_data_layer_frame.data_ptr);
 						if ((open_lin_hw_tx_data(open_lin_data_layer_frame.data_ptr, open_lin_data_layer_frame.length) == l_false) ||
 						   (open_lin_hw_tx_data(&open_lin_data_layer_frame.checksum, (l_u8)sizeof(open_lin_data_layer_frame.checksum)) == l_false))
@@ -148,7 +149,7 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 				} else
 				{
 					/* checksum calculation */
-					if (rx_byte == open_lin_data_layer_checksum(open_lin_data_layer_frame.pid,
+					if (rx_byte == open_lin_data_layer_checksum(open_lin_data_layer_frame.pid, open_lin_data_layer_frame.checksum_type,
 							open_lin_data_layer_frame.length, open_lin_slave_data_buff))
 					{
 						/* valid checksum, copy frame from internal buffer*/
