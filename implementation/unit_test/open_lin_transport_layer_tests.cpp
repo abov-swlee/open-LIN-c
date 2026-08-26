@@ -22,6 +22,14 @@ uint16_t open_lin_supplier_id = 0x1234;
 uint16_t open_lin_function_id = 0x5678;
 uint8_t  open_lin_variant_id = 0x00;
 
+/* Assign Frame ID Range's assignable frame list under test - reset by each test case. */
+uint8_t afr_data_0, afr_data_1, afr_data_2;
+open_lin_frame_slot_t afr_slot_0 = {0x01, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, &afr_data_0};
+open_lin_frame_slot_t afr_slot_1 = {0x02, OPEN_LIN_FRAME_TYPE_RECEIVE,  1, &afr_data_1};
+open_lin_frame_slot_t afr_slot_2 = {0x0E, OPEN_LIN_FRAME_TYPE_RECEIVE,  1, &afr_data_2};
+open_lin_frame_slot_t *open_lin_assignable_frames[] = {&afr_slot_0, &afr_slot_1, &afr_slot_2};
+extern const uint8_t open_lin_assignable_frames_count = sizeof(open_lin_assignable_frames) / sizeof(open_lin_assignable_frames[0]); /* C++: plain "const" defaults to internal linkage, even inside extern "C" */
+
 /* Minimal HW time stub for open_lin_transport_layer_handle()'s N_Cr timestamping;
  * the engine-level tests below (open_lin_tp_rx_feed/open_lin_tp_tx_next) take the
  * timestamp as a parameter instead, so they don't depend on this. */
@@ -144,6 +152,55 @@ TEST_CASE("dispatch: unsupported SID gets a negative response", "[open_lin_trans
 	CHECK(resp[2] == 0x7F);
 	CHECK(resp[3] == 0xB6);
 	CHECK(resp[4] == 0x11);
+}
+
+TEST_CASE("dispatch: assign frame id range reassigns, unassigns, and leaves do-not-care slots alone", "[open_lin_transport_layer][tp]") {
+	open_lin_NAD = 0x01;
+	afr_slot_0.pid = 0x01;
+	afr_slot_1.pid = 0x02;
+	afr_slot_2.pid = 0x0E;
+
+	/* start=0; D2=0x05 (new pid for slot 0), D3=0x00 (unassign slot 1),
+	 * D4=0xFF (do not care, slot 2 untouched), D5=0xFF (out-of-range index 3,
+	 * only fulfillable as do not care - Table 4.16 Example 2) */
+	uint8_t req[8] = {0x01, 0x06, 0xB7, 0x00, 0x05, 0x00, 0xFF, 0xFF};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	CHECK(afr_slot_0.pid == 0x05);
+	CHECK(afr_slot_1.pid == 0xFF); /* OPEN_LIN_PID_UNASSIGNED */
+	CHECK(afr_slot_2.pid == 0x0E); /* unchanged */
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+
+	CHECK(resp[0] == 0x01);
+	CHECK((resp[1] & 0x0F) == 1); /* RSID only, no data - Table 4.17 */
+	CHECK(resp[2] == 0xF7); /* RSID = SID(0xB7) + 0x40 */
+}
+
+TEST_CASE("dispatch: assign frame id range rejects an out-of-range non-wildcard slot", "[open_lin_transport_layer][tp]") {
+	open_lin_NAD = 0x01;
+	afr_slot_0.pid = 0x01;
+	afr_slot_1.pid = 0x02;
+	afr_slot_2.pid = 0x0E;
+
+	/* start=2: D2(idx2, in range) is a real assignment (0x05), D3(idx3, out of
+	 * range) is also a real assignment (0x07, not 0xFF) -> whole request
+	 * rejected, so even the individually-valid idx2 assignment must not apply */
+	uint8_t req[8] = {0x01, 0x06, 0xB7, 0x02, 0x05, 0x07, 0xFF, 0xFF};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	CHECK(afr_slot_2.pid == 0x0E); /* rejected atomically: even the in-range slot is untouched */
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	for (int i = 0; i < 8; i++) {
+		CHECK(resp[i] == 0xFF); /* nothing queued -> idle frame */
+	}
 }
 
 /* ---- Full transport layer (FF/CF) engine tests, LIN-Spec 2.2A Chapter 3 ---- */

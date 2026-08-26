@@ -13,10 +13,18 @@ extern open_lin_NAD_t open_lin_NAD;
 extern l_u16 open_lin_supplier_id;
 extern l_u16 open_lin_function_id;
 extern l_u8  open_lin_variant_id;
+extern open_lin_frame_slot_t *open_lin_assignable_frames[];
+extern const l_u8 open_lin_assignable_frames_count;
 extern void open_lin_sid_callback(open_lin_SID_t sid);
 
 #define OPEN_LIN_WILDCARD_SUPPLIER_ID 0x7FFFu /* Table 4.3 */
 #define OPEN_LIN_WILDCARD_FUNCTION_ID 0xFFFFu /* Table 4.3 */
+
+/* sentinel written to open_lin_frame_slot_t.pid to disable a frame (Table 4.16's
+ * "unassign" value). Always distinguishable from a real id: open_lin_net_get_slot()
+ * is only ever probed with parity-stripped 6-bit ids (0x00-0x3F, OPEN_LIN_ID_MASK),
+ * so this can never accidentally match and the frame silently stops responding. */
+#define OPEN_LIN_PID_UNASSIGNED 0xFFu
 
 /* error_code for the "SID not present in open_lin_sid_handlers[]" case; the
  * spec leaves this value implementation-defined (Section 4.2.6.1's own example
@@ -46,12 +54,14 @@ typedef struct {
 /* static function definitions */
 static t_open_lin_sid_result open_lin_assign_nad_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code);
 static t_open_lin_sid_result open_lin_read_by_id_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code);
+static t_open_lin_sid_result open_lin_assign_frame_id_range_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code);
 static l_bool open_lin_id_match(uint16_t val, uint16_t expected, uint16_t wildcard);
 
 /* static service handlers */
 t_open_lin_sid_handler_item open_lin_sid_handlers[] = {
 		{OPEN_LIN_SID_ASSIGN_NAD, open_lin_assign_nad_handler},
-		{OPEN_LIN_SID_READ_BY_ID, open_lin_read_by_id_handler}
+		{OPEN_LIN_SID_READ_BY_ID, open_lin_read_by_id_handler},
+		{OPEN_LIN_SID_ASSIGN_FRAME_ID_RANGE, open_lin_assign_frame_id_range_handler}
 };
 
 /* transport layer engine state - one active session at a time, see Section 3.2.2 */
@@ -125,6 +135,44 @@ static t_open_lin_sid_result open_lin_read_by_id_handler(const l_u8 *data, l_u8 
 	 * implemented yet; 2-31 and 64-255 are reserved. */
 	*error_code = OPEN_LIN_ERR_IDENTIFIER_NOT_SUPPORTED;
 	return OPEN_LIN_SID_RESULT_NEGATIVE;
+}
+
+/* assign frame id range service implementation, Table 4.16 / Table 4.17
+ * data[0..4] = D1..D5 = start index, PID(idx)..PID(idx+3) as protected identifiers.
+ * PID byte 0x00 = unassign, 0xFF = do not care, anything else = new protected PID. */
+static t_open_lin_sid_result open_lin_assign_frame_id_range_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code)
+{
+	l_u8 start = data[0];
+	l_u8 i;
+
+	(void)resp_data;
+	(void)error_code;
+
+	/* validate all four before applying any - Table 4.16 Example 2: an
+	 * out-of-range slot is only fulfillable as "do not care" (0xFF). */
+	for (i = 0u; i < 4u; i++)
+	{
+		l_u16 idx = (l_u16)start + i;
+		if ((data[1u + i] != 0xFFu) && (idx >= open_lin_assignable_frames_count))
+		{
+			return OPEN_LIN_SID_RESULT_NO_RESPONSE; /* "the slave shall reject the request" */
+		}
+	}
+
+	for (i = 0u; i < 4u; i++)
+	{
+		l_u8 raw = data[1u + i];
+		if (raw == 0xFFu)
+		{
+			continue; /* do not care: leave this frame's PID unchanged */
+		}
+		open_lin_assignable_frames[start + i]->pid =
+			(raw == 0x00u) ? (open_lin_pid_t)OPEN_LIN_PID_UNASSIGNED
+			               : (open_lin_pid_t)(raw & OPEN_LIN_ID_MASK);
+	}
+
+	*resp_len = 0u; /* Table 4.17: positive response carries no data, RSID only */
+	return OPEN_LIN_SID_RESULT_POSITIVE;
 }
 
 /**
