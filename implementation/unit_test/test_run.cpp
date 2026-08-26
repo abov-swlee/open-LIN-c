@@ -4,7 +4,7 @@
 
 extern "C"{
 
-#include "../../open_lin_cfg.h"
+#include "../open_lin_cfg.h"
 #include "../../open_lin_data_layer.h"
 #include "../../open_lin_slave_data_layer.h"
 #include "../../open_lin_hw.h"
