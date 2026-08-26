@@ -10,6 +10,7 @@
 #include "open_lin_network_layer.h"
 #include "open_lin_hw.h"
 #include "open_lin_master_data_layer.h"
+#include "open_lin_transport_layer.h"
 
 static t_open_lin_master_state lin_master_state;
 static void (*lin_master_state_callback)(t_open_lin_master_state);
@@ -112,7 +113,15 @@ l_bool open_lin_master_dl_rx(l_u8 rx_byte)
 			if (rx_byte == open_lin_data_layer_checksum(slot->pid,slot->data_length,frame_tmp_buffer))
 			{
 				(void)open_lin_memcpy(slot->data_ptr,frame_tmp_buffer,slot->data_length);
-				open_lin_master_dl_rx_callback(slot);
+#ifdef OPEN_LIN_TRANSPORT_LAYER
+				if (slot->pid == OPEN_LIN_DIAG_RESPONSE)
+				{
+					open_lin_master_transport_layer_handle_rx(slot);
+				} else
+#endif
+				{
+					open_lin_master_dl_rx_callback(slot);
+				}
 			} else
 			{
 				open_lin_error_handler(OPEN_LIN_MASTER_ERROR_CHECKSUM);
@@ -138,6 +147,14 @@ void open_lin_master_dl_handler()
 			{
 				if (master_table_item->slot.frame_type == OPEN_LIN_FRAME_TYPE_TRANSMIT)
 				{
+#ifdef OPEN_LIN_TRANSPORT_LAYER
+					if (master_table_item->slot.pid == OPEN_LIN_DIAG_REQUEST)
+					{
+						/* fill slot.data_ptr with the next SF/FF/CF chunk before
+						 * case OPEN_LIN_MASTER_TX_DATA below actually sends it */
+						open_lin_master_transport_layer_handle_tx(&master_table_item->slot);
+					}
+#endif
 					open_lin_master_set_state(OPEN_LIN_MASTER_TX_DATA);
 				} else
 				{

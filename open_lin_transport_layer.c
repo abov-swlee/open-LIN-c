@@ -78,6 +78,14 @@ static l_u8 s_tp_response_buf[OPEN_LIN_TP_MAX_MSG_LEN];
  * response to echo the *initial* (request) NAD, not the new one. */
 static open_lin_NAD_t s_tp_response_nad;
 
+/* master side: separate engine state, since a master originates requests on 0x3C
+ * and reassembles responses on 0x3D - the mirror image of the slave role above.
+ * Never both linked into the same binary (master.c and slave.c are separate
+ * executables), so there's no risk of the two sessions interfering. */
+static t_open_lin_tp_tx_ctx s_master_tp_tx_ctx;
+static t_open_lin_tp_rx_ctx s_master_tp_rx_ctx;
+static open_lin_NAD_t s_master_tp_request_nad;
+
 static l_bool open_lin_id_match(uint16_t val, uint16_t expected, uint16_t wildcard)
 {
 	return (l_bool)((val == wildcard) || (val == expected));
@@ -431,6 +439,52 @@ void open_lin_transport_layer_handle_tx(open_lin_frame_slot_t *slot)
 	}
 
 	(void)open_lin_tp_tx_next(&s_tp_tx_ctx, s_tp_response_nad, slot->data_ptr);
+}
+
+l_bool open_lin_master_diag_request(open_lin_NAD_t nad, const l_u8 *msg, l_u16 len)
+{
+	if (s_master_tp_tx_ctx.active == l_true)
+	{
+		return l_false; /* a request is already in flight - one active session, Section 3.2.2 */
+	}
+
+	s_master_tp_request_nad = nad;
+	open_lin_tp_tx_start(&s_master_tp_tx_ctx, msg, len);
+	return l_true;
+}
+
+void open_lin_master_transport_layer_handle_tx(open_lin_frame_slot_t *slot)
+{
+	if ((slot == OPEN_LIN_NET_SLOT_EMPTY) || (slot->pid != OPEN_LIN_DIAG_REQUEST))
+	{
+		return;
+	}
+
+	(void)open_lin_tp_tx_next(&s_master_tp_tx_ctx, s_master_tp_request_nad, slot->data_ptr);
+}
+
+void open_lin_master_transport_layer_handle_rx(open_lin_frame_slot_t *slot)
+{
+	open_lin_NAD_t expected_nad;
+
+	if ((slot == OPEN_LIN_NET_SLOT_EMPTY) || (slot->pid != OPEN_LIN_DIAG_RESPONSE))
+	{
+		return;
+	}
+
+	expected_nad = s_master_tp_request_nad;
+	if ((expected_nad == OPEN_LIN_NAD_BROADCAST) || (expected_nad == OPEN_LIN_NAD_FUNCTIONAL))
+	{
+		/* the request went out wildcard-addressed, so the response carries the
+		 * responding slave's own initial NAD instead (Table 4.8) - not knowable
+		 * in advance, so accept whatever NAD this response actually carries. */
+		expected_nad = slot->data_ptr[0];
+	}
+
+	if (open_lin_tp_rx_feed(&s_master_tp_rx_ctx, slot->data_ptr, expected_nad, open_lin_hw_get_time_us()) == l_true)
+	{
+		open_lin_master_diag_response_callback(s_master_tp_rx_ctx.buffer, s_master_tp_rx_ctx.received_len);
+	}
 }
 
 #endif

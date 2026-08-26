@@ -122,6 +122,22 @@ void open_lin_transport_layer_handle(open_lin_frame_slot_t *slot);
 /** @brief Fill an outgoing 0x3D (slave response) frame - hooked from the network layer. */
 void open_lin_transport_layer_handle_tx(open_lin_frame_slot_t *slot);
 
+/**
+ * @brief Master side: originate a diagnostic request (SID/data), segmented as needed.
+ * @param[in] nad  Target node's NAD (or OPEN_LIN_NAD_BROADCAST/_FUNCTIONAL).
+ * @param[in] msg  SID + data to send, owned by the caller until the request completes.
+ * @return l_false if a request is already in progress (single active session, Section 3.2.2).
+ */
+l_bool open_lin_master_diag_request(open_lin_NAD_t nad, const l_u8 *msg, l_u16 len);
+
+/** @brief Fill an outgoing 0x3C (master request) frame - hooked from the master data layer. */
+void open_lin_master_transport_layer_handle_tx(open_lin_frame_slot_t *slot);
+
+/** @brief Feed an incoming 0x3D (slave response) frame - hooked from the master data layer. */
+void open_lin_master_transport_layer_handle_rx(open_lin_frame_slot_t *slot);
+
+/** @brief App hook: called once a diagnostic response (RSID/data) has been fully reassembled. */
+extern void open_lin_master_diag_response_callback(const l_u8 *msg, l_u16 len);
 
 #endif /* OPEN_LIN_TRANSPORT_LAYER */
 

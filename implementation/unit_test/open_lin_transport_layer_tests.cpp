@@ -37,6 +37,17 @@ static l_u32 s_fake_time_us = 0;
 l_u32 open_lin_hw_get_time_us(void) { return s_fake_time_us; }
 
 void open_lin_sid_callback(open_lin_SID_t sid) { (void)sid; }
+
+/* captures the last call, for the master diag response callback tests below */
+static l_bool s_master_diag_response_called = l_false;
+static l_u8   s_master_diag_response_buf[64];
+static l_u16  s_master_diag_response_len = 0;
+void open_lin_master_diag_response_callback(const l_u8 *msg, l_u16 len)
+{
+	s_master_diag_response_called = l_true;
+	s_master_diag_response_len = len;
+	(void)open_lin_memcpy(s_master_diag_response_buf, msg, len);
+}
 }
 
 /* Assign NAD request, Table 4.7: D1=supplier LSB, D2=supplier MSB, D3=function LSB,
@@ -320,5 +331,77 @@ TEST_CASE("tp tx: nothing pending returns an all-idle frame", "[open_lin_transpo
 	for (int i = 0; i < 8; i++) {
 		CHECK(frame[i] == 0xFF);
 	}
+}
+
+/* ---- Master side: originate requests on 0x3C, reassemble responses on 0x3D ---- */
+
+TEST_CASE("master diag: originates a single frame request", "[open_lin_transport_layer][tp][master]") {
+	uint8_t msg[] = {0xB0, 0x34, 0x12, 0x78, 0x56, 0x22}; /* Assign NAD request, SID+5 data bytes */
+	CHECK(open_lin_master_diag_request(0x05, msg, sizeof(msg)) == l_true);
+
+	uint8_t req[8];
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, req};
+	open_lin_master_transport_layer_handle_tx(&req_slot);
+
+	CHECK(req[0] == 0x05);
+	CHECK((req[1] >> 4) == OPEN_LIN_PCI_SF);
+	CHECK((req[1] & 0x0F) == sizeof(msg));
+	CHECK(req[2] == 0xB0);
+	CHECK(req[7] == 0x22); /* last of D1..D5 */
+}
+
+TEST_CASE("master diag: a second request while one is in flight is refused", "[open_lin_transport_layer][tp][master]") {
+	uint8_t msg[10] = {0xB2,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09}; /* needs FF+CF */
+	CHECK(open_lin_master_diag_request(0x05, msg, sizeof(msg)) == l_true);
+
+	uint8_t frame[8];
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, frame};
+	open_lin_master_transport_layer_handle_tx(&req_slot); /* sends the FF, CF still pending */
+
+	uint8_t other_msg[] = {0xB2, 0x00};
+	CHECK(open_lin_master_diag_request(0x06, other_msg, sizeof(other_msg)) == l_false);
+
+	/* drain the pending CF so later tests don't see a stale in-flight session */
+	open_lin_master_transport_layer_handle_tx(&req_slot);
+}
+
+TEST_CASE("master diag: reassembles a response and hands it to the app callback", "[open_lin_transport_layer][tp][master]") {
+	/* consume a small request first, purely to set the expected response NAD to 0x05
+	 * (open_lin_master_transport_layer_handle_rx() checks the response against
+	 * whatever NAD the most recent open_lin_master_diag_request() targeted) */
+	uint8_t msg[] = {0xB2, 0x00};
+	CHECK(open_lin_master_diag_request(0x05, msg, sizeof(msg)) == l_true);
+	uint8_t req[8];
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, req};
+	open_lin_master_transport_layer_handle_tx(&req_slot);
+
+	s_master_diag_response_called = l_false;
+	uint8_t resp[8] = {0x05, 0x03, 0xF2, 0x11, 0x22, 0xFF, 0xFF, 0xFF}; /* SF, len=3 */
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, resp};
+	open_lin_master_transport_layer_handle_rx(&resp_slot);
+
+	CHECK(s_master_diag_response_called == l_true);
+	CHECK(s_master_diag_response_len == 3);
+	CHECK(s_master_diag_response_buf[0] == 0xF2);
+	CHECK(s_master_diag_response_buf[1] == 0x11);
+	CHECK(s_master_diag_response_buf[2] == 0x22);
+}
+
+TEST_CASE("master diag: a broadcast request accepts whichever NAD the response carries", "[open_lin_transport_layer][tp][master]") {
+	uint8_t msg[] = {0xB0, 0x34, 0x12, 0xFF, 0xFF, 0x7F}; /* Assign NAD, wildcard-addressed */
+	CHECK(open_lin_master_diag_request(OPEN_LIN_NAD_BROADCAST, msg, sizeof(msg)) == l_true);
+	uint8_t req[8];
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, req};
+	open_lin_master_transport_layer_handle_tx(&req_slot); /* consume the request, SF fits in one call */
+
+	s_master_diag_response_called = l_false;
+	/* response NAD (0x03) is the slave's own initial NAD, not the broadcast 0x7F used in the request */
+	uint8_t resp[8] = {0x03, 0x01, 0xF0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, resp};
+	open_lin_master_transport_layer_handle_rx(&resp_slot);
+
+	CHECK(s_master_diag_response_called == l_true);
+	CHECK(s_master_diag_response_len == 1);
+	CHECK(s_master_diag_response_buf[0] == 0xF0);
 }
 
