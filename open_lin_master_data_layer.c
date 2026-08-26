@@ -178,7 +178,7 @@ void open_lin_master_dl_handler()
 					l_u8 bytes_read = 0;
 					do {
 						bytes_read = open_lin_hw_rx_byte(&master_table_item->slot.data_ptr[i], read_timeout);
-						frame_timeout = (open_lin_hw_get_time_us() - frame_start_time_us) > master_frame_table->frame_slot_us;
+						frame_timeout = (open_lin_hw_get_time_us() - frame_start_time_us) > master_table_item->frame_slot_us;
 					} while (bytes_read <= 0 && !frame_timeout);
 					if (frame_timeout) {
 						open_lin_error_handler(OPEN_LIN_MASTER_ERROR_FRAME_SLOT_TIMEOUT);
