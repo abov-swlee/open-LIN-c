@@ -20,6 +20,7 @@ extern "C"{
 open_lin_NAD_t open_lin_NAD = 0;
 uint16_t open_lin_supplier_id = 0x1234;
 uint16_t open_lin_function_id = 0x5678;
+uint8_t  open_lin_variant_id = 0x00;
 
 /* Minimal HW time stub for open_lin_transport_layer_handle()'s N_Cr timestamping;
  * the engine-level tests below (open_lin_tp_rx_feed/open_lin_tp_tx_next) take the
@@ -30,8 +31,9 @@ l_u32 open_lin_hw_get_time_us(void) { return s_fake_time_us; }
 void open_lin_sid_callback(open_lin_SID_t sid) { (void)sid; }
 }
 
-/* frame from Table 4.7 LIN spec 2.1 */
-uint8_t request_data_1[] = {OPEN_LIN_NAD_BROADCAST, 0x06,0xB0,0x12,0x34,0x56,0x78,0x34};
+/* Assign NAD request, Table 4.7: D1=supplier LSB, D2=supplier MSB, D3=function LSB,
+ * D4=function MSB, D5=new NAD. supplier=0x1234, function=0x5678, matches the globals above. */
+uint8_t request_data_1[] = {OPEN_LIN_NAD_BROADCAST, 0x06,0xB0,0x34,0x12,0x78,0x56,0x34};
 
 open_lin_frame_slot_t slot_1 = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, request_data_1};
 
@@ -39,6 +41,109 @@ TEST_CASE("change NAD test", "[open_lin_transport_layer]"){
 	open_lin_NAD = 0;
 	open_lin_transport_layer_handle(&slot_1);
 	CHECK(open_lin_NAD == 0x34);
+}
+
+/* ---- Response pipeline: handler -> RSID/negative-response assembly -> 0x3D tx ---- */
+
+TEST_CASE("dispatch: assign NAD responds with the initial NAD, not the new one", "[open_lin_transport_layer][tp]") {
+	open_lin_NAD = 0x01;
+	open_lin_supplier_id = 0x1234;
+	open_lin_function_id = 0x5678;
+
+	uint8_t req[8] = {0x01, 0x06, 0xB0, 0x34, 0x12, 0x78, 0x56, 0x22}; /* new NAD = 0x22 */
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+	CHECK(open_lin_NAD == 0x22); /* request was applied */
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+
+	CHECK(resp[0] == 0x01); /* Table 4.8: response uses the initial NAD, not the new 0x22 */
+	CHECK((resp[1] >> 4) == OPEN_LIN_PCI_SF);
+	CHECK((resp[1] & 0x0F) == 1); /* RSID only, no data bytes */
+	CHECK(resp[2] == 0xF0); /* RSID = SID(0xB0) + 0x40 */
+}
+
+TEST_CASE("dispatch: assign NAD with mismatched supplier id stays silent", "[open_lin_transport_layer][tp]") {
+	open_lin_NAD = 0x01;
+	open_lin_supplier_id = 0x1234;
+	open_lin_function_id = 0x5678;
+
+	uint8_t req[8] = {0x01, 0x06, 0xB0, 0xAA, 0xBB, 0x78, 0x56, 0x22}; /* wrong supplier id */
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+	CHECK(open_lin_NAD == 0x01); /* unchanged, Section 4.2.5.1 */
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	for (int i = 0; i < 8; i++) {
+		CHECK(resp[i] == 0xFF); /* nothing queued -> idle frame */
+	}
+}
+
+TEST_CASE("dispatch: read by identifier id=0 returns the LIN product identification", "[open_lin_transport_layer][tp]") {
+	open_lin_NAD = 0x05;
+	open_lin_supplier_id = 0x1234;
+	open_lin_function_id = 0x5678;
+	open_lin_variant_id = 0x03;
+
+	/* Table 4.18: D1=identifier, D2=supplier LSB, D3=supplier MSB, D4=function LSB, D5=function MSB */
+	uint8_t req[8] = {0x05, 0x06, 0xB2, 0x00, 0x34, 0x12, 0x78, 0x56};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+
+	CHECK(resp[0] == 0x05);
+	CHECK((resp[1] & 0x0F) == 6); /* RSID + 5 data bytes, Table 4.20 row id=0 */
+	CHECK(resp[2] == 0xF2); /* RSID = SID(0xB2) + 0x40 */
+	CHECK(resp[3] == 0x34); /* supplier LSB */
+	CHECK(resp[4] == 0x12); /* supplier MSB */
+	CHECK(resp[5] == 0x78); /* function LSB */
+	CHECK(resp[6] == 0x56); /* function MSB */
+	CHECK(resp[7] == 0x03); /* variant */
+}
+
+TEST_CASE("dispatch: read by identifier with an unsupported id gets a negative response", "[open_lin_transport_layer][tp]") {
+	open_lin_NAD = 0x05;
+	open_lin_supplier_id = 0x1234;
+	open_lin_function_id = 0x5678;
+
+	uint8_t req[8] = {0x05, 0x06, 0xB2, 0x01 /* id=1, serial number, not implemented */, 0x34, 0x12, 0x78, 0x56};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+
+	CHECK(resp[0] == 0x05);
+	CHECK((resp[1] & 0x0F) == 3);
+	CHECK(resp[2] == 0x7F);
+	CHECK(resp[3] == 0xB2);
+	CHECK(resp[4] == 0x12); /* Section 4.2.6.1 example error code */
+}
+
+TEST_CASE("dispatch: unsupported SID gets a negative response", "[open_lin_transport_layer][tp]") {
+	open_lin_NAD = 0x01;
+
+	uint8_t req[8] = {0x01, 0x01, 0xB6, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; /* Save Configuration, not registered yet */
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+
+	CHECK(resp[0] == 0x01);
+	CHECK((resp[1] & 0x0F) == 3);
+	CHECK(resp[2] == 0x7F);
+	CHECK(resp[3] == 0xB6);
+	CHECK(resp[4] == 0x11);
 }
 
 /* ---- Full transport layer (FF/CF) engine tests, LIN-Spec 2.2A Chapter 3 ---- */

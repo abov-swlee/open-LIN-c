@@ -12,40 +12,119 @@
 extern open_lin_NAD_t open_lin_NAD;
 extern l_u16 open_lin_supplier_id;
 extern l_u16 open_lin_function_id;
+extern l_u8  open_lin_variant_id;
 extern void open_lin_sid_callback(open_lin_SID_t sid);
+
+#define OPEN_LIN_WILDCARD_SUPPLIER_ID 0x7FFFu /* Table 4.3 */
+#define OPEN_LIN_WILDCARD_FUNCTION_ID 0xFFFFu /* Table 4.3 */
+
+/* error_code for the "SID not present in open_lin_sid_handlers[]" case; the
+ * spec leaves this value implementation-defined (Section 4.2.6.1's own example
+ * uses 0x12 for "identifier not supported" on a per-service basis, not a
+ * generic table) - 0x11 mirrors the common UDS "service not supported" code. */
+#define OPEN_LIN_ERR_SERVICE_NOT_SUPPORTED 0x11u
+#define OPEN_LIN_ERR_IDENTIFIER_NOT_SUPPORTED 0x12u /* Section 4.2.6.1 example */
+
+/**
+ * @brief Outcome of a SID handler, drives what open_lin_transport_layer_dispatch()
+ *        sends back on 0x3D.
+ */
+typedef enum {
+	OPEN_LIN_SID_RESULT_NO_RESPONSE = 0, /**< request not addressed to this node (id/NAD mismatch) - stay silent */
+	OPEN_LIN_SID_RESULT_POSITIVE,        /**< resp_data[0..*resp_len) valid, respond RSID = SID + 0x40 */
+	OPEN_LIN_SID_RESULT_NEGATIVE         /**< respond 0x7F, SID, *error_code, per Table 4.21 */
+} t_open_lin_sid_result;
+
+typedef t_open_lin_sid_result (*t_open_lin_sid_handler_fn)(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code);
 
 typedef struct {
 	open_lin_SID_t sid;
-	void (*handler)(const l_u8 *data);
+	t_open_lin_sid_handler_fn handler;
 } t_open_lin_sid_handler_item;
 
 
 /* static function definitions */
-static void open_lin_assign_nad_handler(const l_u8 *data);
+static t_open_lin_sid_result open_lin_assign_nad_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code);
+static t_open_lin_sid_result open_lin_read_by_id_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code);
+static l_bool open_lin_id_match(uint16_t val, uint16_t expected, uint16_t wildcard);
 
 /* static service handlers */
 t_open_lin_sid_handler_item open_lin_sid_handlers[] = {
-		{OPEN_LIN_SID_ASSIGN_NAD,open_lin_assign_nad_handler}
+		{OPEN_LIN_SID_ASSIGN_NAD, open_lin_assign_nad_handler},
+		{OPEN_LIN_SID_READ_BY_ID, open_lin_read_by_id_handler}
 };
 
 /* transport layer engine state - one active session at a time, see Section 3.2.2 */
 static t_open_lin_tp_rx_ctx s_tp_rx_ctx;
 static t_open_lin_tp_tx_ctx s_tp_tx_ctx;
 
-/* assign NAD service implementation
- * data[0..4] = D1..D5 = supplier id (MSB,LSB), function id (MSB,LSB), new NAD */
-static void open_lin_assign_nad_handler(const l_u8 *data)
-{
-	uint16_t sup = (data[1]) | (((uint16_t)data[0]) << 8);
-	uint16_t fun = (data[3]) | (((uint16_t)data[2]) << 8);
+/* response message storage - t_open_lin_tp_tx_ctx only holds a pointer, so this
+ * must outlive every open_lin_tp_tx_next() call for a multi-frame (FF+CF) response. */
+static l_u8 s_tp_response_buf[OPEN_LIN_TP_MAX_MSG_LEN];
 
-	if ((open_lin_supplier_id == sup) && (open_lin_function_id == fun))
+/* NAD to use for the pending response, captured from the request at dispatch time.
+ * Must NOT be re-read from open_lin_NAD at tx time: services like Assign NAD change
+ * open_lin_NAD as a side effect of handling the request, but Table 4.8 requires the
+ * response to echo the *initial* (request) NAD, not the new one. */
+static open_lin_NAD_t s_tp_response_nad;
+
+static l_bool open_lin_id_match(uint16_t val, uint16_t expected, uint16_t wildcard)
+{
+	return (l_bool)((val == wildcard) || (val == expected));
+}
+
+/* assign NAD service implementation, Table 4.7 / Table 4.8
+ * data[0..4] = D1..D5 = supplier id (LSB,MSB), function id (LSB,MSB), new NAD */
+static t_open_lin_sid_result open_lin_assign_nad_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code)
+{
+	uint16_t sup = data[0] | (((uint16_t)data[1]) << 8);
+	uint16_t fun = data[2] | (((uint16_t)data[3]) << 8);
+
+	(void)resp_data;
+	(void)error_code;
+
+	if (open_lin_id_match(sup, open_lin_supplier_id, OPEN_LIN_WILDCARD_SUPPLIER_ID) &&
+	    open_lin_id_match(fun, open_lin_function_id, OPEN_LIN_WILDCARD_FUNCTION_ID))
 	{
-		/* update NAD */
 		open_lin_NAD = data[4];
-	} else {
-		/* invalid id, this device is not addressed do nothing */
+		*resp_len = 0u; /* Table 4.8: positive response carries no data, RSID only */
+		return OPEN_LIN_SID_RESULT_POSITIVE;
 	}
+	/* "A response shall only be sent if the NAD, the Supplier ID and the
+	 * Function ID match." - Section 4.2.5.1 */
+	return OPEN_LIN_SID_RESULT_NO_RESPONSE;
+}
+
+/* read by identifier service implementation, Table 4.18 / Table 4.19 / Table 4.20
+ * data[0..4] = D1..D5 = identifier, supplier id (LSB,MSB), function id (LSB,MSB) */
+static t_open_lin_sid_result open_lin_read_by_id_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code)
+{
+	l_u8 id = data[0];
+	uint16_t sup = data[1] | (((uint16_t)data[2]) << 8);
+	uint16_t fun = data[3] | (((uint16_t)data[4]) << 8);
+
+	if (!open_lin_id_match(sup, open_lin_supplier_id, OPEN_LIN_WILDCARD_SUPPLIER_ID) ||
+	    !open_lin_id_match(fun, open_lin_function_id, OPEN_LIN_WILDCARD_FUNCTION_ID))
+	{
+		return OPEN_LIN_SID_RESULT_NO_RESPONSE; /* not addressed to this node */
+	}
+
+	if (id == 0u)
+	{
+		/* Table 4.20, id=0: LIN Product Identification - the only mandatory identifier */
+		resp_data[0] = (l_u8)(open_lin_supplier_id & 0xFFu);
+		resp_data[1] = (l_u8)(open_lin_supplier_id >> 8);
+		resp_data[2] = (l_u8)(open_lin_function_id & 0xFFu);
+		resp_data[3] = (l_u8)(open_lin_function_id >> 8);
+		resp_data[4] = open_lin_variant_id;
+		*resp_len = 5u;
+		return OPEN_LIN_SID_RESULT_POSITIVE;
+	}
+
+	/* id=1 (serial number) and 32-63 (user defined) are optional and not
+	 * implemented yet; 2-31 and 64-255 are reserved. */
+	*error_code = OPEN_LIN_ERR_IDENTIFIER_NOT_SUPPORTED;
+	return OPEN_LIN_SID_RESULT_NEGATIVE;
 }
 
 /**
@@ -75,13 +154,44 @@ static void open_lin_transport_layer_dispatch(const l_u8 *msg, l_u16 len, open_l
 	{
 		if (open_lin_sid_handlers[i].sid == msg[0])
 		{
-			open_lin_sid_handlers[i].handler(&msg[1]);
+			l_u8 resp_data[5];
+			l_u8 resp_len = 0u;
+			l_u8 error_code = 0u;
+			t_open_lin_sid_result result = open_lin_sid_handlers[i].handler(&msg[1], resp_data, &resp_len, &error_code);
+
+			s_tp_response_nad = requester_nad; /* echo the request's NAD, Table 4.8 */
+
+			switch (result)
+			{
+				case OPEN_LIN_SID_RESULT_POSITIVE:
+					s_tp_response_buf[0] = (l_u8)(msg[0] + 0x40u); /* RSID, Section 4.2.3.5 */
+					(void)open_lin_memcpy(&s_tp_response_buf[1], resp_data, resp_len);
+					open_lin_tp_tx_start(&s_tp_tx_ctx, s_tp_response_buf, (l_u16)(resp_len + 1u));
+					break;
+
+				case OPEN_LIN_SID_RESULT_NEGATIVE:
+					s_tp_response_buf[0] = 0x7Fu;
+					s_tp_response_buf[1] = msg[0];
+					s_tp_response_buf[2] = error_code;
+					open_lin_tp_tx_start(&s_tp_tx_ctx, s_tp_response_buf, 3u);
+					break;
+
+				case OPEN_LIN_SID_RESULT_NO_RESPONSE:
+				default:
+					break; /* stay silent, nothing queued */
+			}
+
 			open_lin_sid_callback((open_lin_SID_t)msg[0]);
 			return;
 		}
 	}
-	/* unsupported SID: negative response (RSID=0x7F) generation belongs to the
-	 * response pipeline, not implemented yet - see project backlog. */
+
+	/* SID not in open_lin_sid_handlers[]: negative response, Table 4.21 */
+	s_tp_response_nad = requester_nad;
+	s_tp_response_buf[0] = 0x7Fu;
+	s_tp_response_buf[1] = msg[0];
+	s_tp_response_buf[2] = OPEN_LIN_ERR_SERVICE_NOT_SUPPORTED;
+	open_lin_tp_tx_start(&s_tp_tx_ctx, s_tp_response_buf, 3u);
 }
 
 void open_lin_tp_rx_init(t_open_lin_tp_rx_ctx *ctx)
@@ -272,7 +382,7 @@ void open_lin_transport_layer_handle_tx(open_lin_frame_slot_t *slot)
 		return;
 	}
 
-	(void)open_lin_tp_tx_next(&s_tp_tx_ctx, open_lin_NAD, slot->data_ptr);
+	(void)open_lin_tp_tx_next(&s_tp_tx_ctx, s_tp_response_nad, slot->data_ptr);
 }
 
 #endif
