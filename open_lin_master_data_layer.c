@@ -193,8 +193,15 @@ void open_lin_master_dl_handler()
 					const l_u32 read_timeout = 1000;
 					l_bool frame_timeout = false;
 					l_u8 bytes_read = 0;
+					l_u8 rx_byte = 0;
 					do {
-						bytes_read = open_lin_hw_rx_byte(&master_table_item->slot.data_ptr[i], read_timeout);
+						/* read into a local, not slot.data_ptr[i]: len goes one past
+						 * data_length for the checksum byte, which would write out
+						 * of bounds on a slot buffer sized to exactly data_length
+						 * (e.g. diag_response_buffer[8] with data_length=8).
+						 * open_lin_master_dl_rx() does its own buffering and only
+						 * copies into slot.data_ptr once the checksum validates. */
+						bytes_read = open_lin_hw_rx_byte(&rx_byte, read_timeout);
 						frame_timeout = (open_lin_hw_get_time_us() - frame_start_time_us) > master_table_item->frame_slot_us;
 					} while (bytes_read <= 0 && !frame_timeout);
 					if (frame_timeout) {
@@ -203,7 +210,7 @@ void open_lin_master_dl_handler()
 						return;
 					}
 					else {
-						open_lin_master_dl_rx(master_table_item->slot.data_ptr[i]);
+						open_lin_master_dl_rx(rx_byte);
 					}
 				}
 				break;
