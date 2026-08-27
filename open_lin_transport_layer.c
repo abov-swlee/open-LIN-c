@@ -86,6 +86,11 @@ static t_open_lin_tp_tx_ctx s_master_tp_tx_ctx;
 static t_open_lin_tp_rx_ctx s_master_tp_rx_ctx;
 static open_lin_NAD_t s_master_tp_request_nad;
 
+/* debug/test only: set by open_lin_master_diag_request_debug_drop_cf(), consumed
+ * by open_lin_master_transport_layer_handle_tx() right after the FF goes out -
+ * see the header comment on that function. */
+static l_bool s_master_tp_tx_debug_drop_cf = l_false;
+
 static l_bool open_lin_id_match(uint16_t val, uint16_t expected, uint16_t wildcard)
 {
 	return (l_bool)((val == wildcard) || (val == expected));
@@ -416,6 +421,24 @@ l_bool open_lin_tp_tx_next(t_open_lin_tp_tx_ctx *ctx, open_lin_NAD_t nad, l_u8 *
 	return l_true;
 }
 
+void open_lin_transport_layer_poll(l_u32 now_us)
+{
+	if (open_lin_tp_rx_timed_out(&s_tp_rx_ctx, now_us) == l_true)
+	{
+		open_lin_tp_rx_init(&s_tp_rx_ctx); /* drop the stale partial message so the next SF/FF starts clean */
+		open_lin_error_handler(OPEN_LIN_SLAVE_ERROR_TP_RX_TIMEOUT);
+	}
+}
+
+void open_lin_master_transport_layer_poll(l_u32 now_us)
+{
+	if (open_lin_tp_rx_timed_out(&s_master_tp_rx_ctx, now_us) == l_true)
+	{
+		open_lin_tp_rx_init(&s_master_tp_rx_ctx);
+		open_lin_error_handler(OPEN_LIN_MASTER_ERROR_TP_RX_TIMEOUT);
+	}
+}
+
 void open_lin_transport_layer_handle(open_lin_frame_slot_t *slot)
 {
 	if ((slot == OPEN_LIN_NET_SLOT_EMPTY) || (slot->pid != OPEN_LIN_DIAG_REQUEST))
@@ -453,14 +476,35 @@ l_bool open_lin_master_diag_request(open_lin_NAD_t nad, const l_u8 *msg, l_u16 l
 	return l_true;
 }
 
+l_bool open_lin_master_diag_request_debug_drop_cf(open_lin_NAD_t nad, const l_u8 *msg, l_u16 len)
+{
+	l_bool result = open_lin_master_diag_request(nad, msg, len);
+	if (result == l_true)
+	{
+		s_master_tp_tx_debug_drop_cf = l_true;
+	}
+	return result;
+}
+
 void open_lin_master_transport_layer_handle_tx(open_lin_frame_slot_t *slot)
 {
+	l_bool more;
+
 	if ((slot == OPEN_LIN_NET_SLOT_EMPTY) || (slot->pid != OPEN_LIN_DIAG_REQUEST))
 	{
 		return;
 	}
 
-	(void)open_lin_tp_tx_next(&s_master_tp_tx_ctx, s_master_tp_request_nad, slot->data_ptr);
+	more = open_lin_tp_tx_next(&s_master_tp_tx_ctx, s_master_tp_request_nad, slot->data_ptr);
+
+	if ((s_master_tp_tx_debug_drop_cf == l_true) && (more == l_true))
+	{
+		/* `more == l_true` here means the frame just filled in was the FF (a
+		 * lone SF always returns l_false) - stop before any CF goes out, so
+		 * the target is left waiting on a Consecutive Frame that never comes. */
+		s_master_tp_tx_ctx.active = l_false;
+		s_master_tp_tx_debug_drop_cf = l_false;
+	}
 }
 
 void open_lin_master_transport_layer_handle_rx(open_lin_frame_slot_t *slot)

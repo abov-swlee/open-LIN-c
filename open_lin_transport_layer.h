@@ -106,6 +106,19 @@ l_bool open_lin_tp_rx_feed(t_open_lin_tp_rx_ctx *ctx, const l_u8 *frame8, open_l
 /** @brief N_Cr supervision - call periodically while ctx->active is true. */
 l_bool open_lin_tp_rx_timed_out(const t_open_lin_tp_rx_ctx *ctx, l_u32 now_us);
 
+/**
+ * @brief N_Cr supervision for the slave's request-reassembly session (Table 3.2).
+ *        Call periodically from the app's main loop with the current time. If a
+ *        FF+CF request stalls (a Consecutive Frame never arrives), this resets
+ *        the reassembly context and reports OPEN_LIN_SLAVE_ERROR_TP_RX_TIMEOUT -
+ *        otherwise a stalled session would sit silently forever with no error
+ *        reported and no chance to corrupt a later, unrelated CF-shaped frame.
+ */
+void open_lin_transport_layer_poll(l_u32 now_us);
+
+/** @brief N_Cr supervision for the master's response-reassembly session - see open_lin_transport_layer_poll(). */
+void open_lin_master_transport_layer_poll(l_u32 now_us);
+
 /** @brief Register a message (SID/RSID + data) to be sent, segmented as needed. */
 void   open_lin_tp_tx_start(t_open_lin_tp_tx_ctx *ctx, const l_u8 *msg, l_u16 len);
 
@@ -129,6 +142,17 @@ void open_lin_transport_layer_handle_tx(open_lin_frame_slot_t *slot);
  * @return l_false if a request is already in progress (single active session, Section 3.2.2).
  */
 l_bool open_lin_master_diag_request(open_lin_NAD_t nad, const l_u8 *msg, l_u16 len);
+
+/**
+ * @brief Debug/test only: like open_lin_master_diag_request(), but stops after
+ *        sending the First Frame instead of continuing on to the Consecutive
+ *        Frame(s) - `msg`/`len` must require FF+CF segmentation (len > 6, see
+ *        Section 3.2.1). Lets the target's N_Cr supervision
+ *        (open_lin_transport_layer_poll()) be exercised on real hardware
+ *        without needing to physically fault-inject a dropped frame.
+ * @return l_false if a request is already in progress (same rule as open_lin_master_diag_request()).
+ */
+l_bool open_lin_master_diag_request_debug_drop_cf(open_lin_NAD_t nad, const l_u8 *msg, l_u16 len);
 
 /** @brief Fill an outgoing 0x3C (master request) frame - hooked from the master data layer. */
 void open_lin_master_transport_layer_handle_tx(open_lin_frame_slot_t *slot);

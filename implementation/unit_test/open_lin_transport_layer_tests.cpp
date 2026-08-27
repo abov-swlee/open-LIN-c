@@ -38,6 +38,10 @@ l_u32 open_lin_hw_get_time_us(void) { return s_fake_time_us; }
 
 void open_lin_sid_callback(open_lin_SID_t sid) { (void)sid; }
 
+/* captures the last call, for the N_Cr poll timeout tests below */
+static t_open_lin_error s_last_error = OPEN_LIN_NO_ERROR;
+void open_lin_error_handler(t_open_lin_error error_code) { s_last_error = error_code; }
+
 /* captures the last call, for the master diag response callback tests below */
 static l_bool s_master_diag_response_called = l_false;
 static l_u8   s_master_diag_response_buf[64];
@@ -403,5 +407,100 @@ TEST_CASE("master diag: a broadcast request accepts whichever NAD the response c
 	CHECK(s_master_diag_response_called == l_true);
 	CHECK(s_master_diag_response_len == 1);
 	CHECK(s_master_diag_response_buf[0] == 0xF0);
+}
+
+TEST_CASE("master diag: debug_drop_cf sends the FF then goes idle instead of the CF", "[open_lin_transport_layer][tp][master][debug]") {
+	uint8_t msg[10] = {0xB0,0xFF,0x7F,0xFF,0xFF,0x01,0xAA,0xBB,0xCC,0xDD}; /* needs FF+CF */
+	CHECK(open_lin_master_diag_request_debug_drop_cf(0x05, msg, sizeof(msg)) == l_true);
+
+	uint8_t ff[8];
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, ff};
+	open_lin_master_transport_layer_handle_tx(&req_slot);
+	CHECK((ff[1] >> 4) == OPEN_LIN_PCI_FF); /* the FF still goes out normally */
+
+	uint8_t next[8];
+	open_lin_frame_slot_t req_slot2 = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, next};
+	open_lin_master_transport_layer_handle_tx(&req_slot2);
+	for (int i = 0; i < 8; i++) {
+		CHECK(next[i] == 0xFF); /* the CF is dropped: idle frame instead */
+	}
+
+	/* a fresh request right after isn't refused as "still in flight" */
+	uint8_t other_msg[] = {0xB2, 0x00};
+	CHECK(open_lin_master_diag_request(0x06, other_msg, sizeof(other_msg)) == l_true);
+	open_lin_master_transport_layer_handle_tx(&req_slot); /* drain it so later tests see a clean state */
+}
+
+/* ---- N_Cr supervision: open_lin_transport_layer_poll() / open_lin_master_transport_layer_poll() ---- */
+
+TEST_CASE("slave tp poll: an idle session never reports a timeout", "[open_lin_transport_layer][tp][poll]") {
+	s_last_error = OPEN_LIN_NO_ERROR;
+	open_lin_transport_layer_poll(0);
+	open_lin_transport_layer_poll(0xFFFFFFFFu); /* even far in the future */
+	CHECK(s_last_error == OPEN_LIN_NO_ERROR);
+}
+
+TEST_CASE("slave tp poll: N_Cr timeout resets a stalled request reassembly and reports it", "[open_lin_transport_layer][tp][poll]") {
+	open_lin_NAD = 0x01;
+	s_last_error = OPEN_LIN_NO_ERROR;
+
+	/* FF only - a 10 byte message needs a following CF that never arrives */
+	s_fake_time_us = 1000;
+	uint8_t ff[8] = {0x01, 0x10, 0x0A, 0xB0, 0x34, 0x12, 0x78, 0x56};
+	open_lin_frame_slot_t ff_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, ff};
+	open_lin_transport_layer_handle(&ff_slot);
+	CHECK(open_lin_NAD == 0x01); /* unaffected: still waiting on the CF, not dispatched yet */
+
+	open_lin_transport_layer_poll(s_fake_time_us + 500000); /* within N_Cr (1s) */
+	CHECK(s_last_error == OPEN_LIN_NO_ERROR);
+
+	open_lin_transport_layer_poll(s_fake_time_us + 1000001); /* past N_Cr */
+	CHECK(s_last_error == OPEN_LIN_SLAVE_ERROR_TP_RX_TIMEOUT);
+
+	/* reassembly context is clean again: a fresh, unrelated SF request dispatches normally */
+	uint8_t req[8] = {0x01, 0x06, 0xB0, 0x34, 0x12, 0x78, 0x56, 0x22};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+	CHECK(open_lin_NAD == 0x22); /* request applied normally, confirms the stale ctx was cleared */
+}
+
+TEST_CASE("master tp poll: an idle session never reports a timeout", "[open_lin_transport_layer][tp][master][poll]") {
+	s_last_error = OPEN_LIN_NO_ERROR;
+	open_lin_master_transport_layer_poll(0);
+	open_lin_master_transport_layer_poll(0xFFFFFFFFu);
+	CHECK(s_last_error == OPEN_LIN_NO_ERROR);
+}
+
+TEST_CASE("master tp poll: N_Cr timeout resets a stalled response reassembly and reports it", "[open_lin_transport_layer][tp][master][poll]") {
+	uint8_t msg[] = {0xB2, 0x00};
+	CHECK(open_lin_master_diag_request(0x05, msg, sizeof(msg)) == l_true);
+	uint8_t req[8];
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, req};
+	open_lin_master_transport_layer_handle_tx(&req_slot); /* send the request (fits a SF) */
+
+	s_last_error = OPEN_LIN_NO_ERROR;
+	s_master_diag_response_called = l_false;
+
+	/* response FF arrives (10 byte message), but the CF never does */
+	s_fake_time_us = 2000;
+	uint8_t resp_ff[8] = {0x05, 0x10, 0x0A, 0xF2, 0x01, 0x02, 0x03, 0x04};
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, resp_ff};
+	open_lin_master_transport_layer_handle_rx(&resp_slot);
+	CHECK(s_master_diag_response_called == l_false); /* not complete yet */
+
+	open_lin_master_transport_layer_poll(s_fake_time_us + 500000); /* within N_Cr (1s) */
+	CHECK(s_last_error == OPEN_LIN_NO_ERROR);
+
+	open_lin_master_transport_layer_poll(s_fake_time_us + 1000001); /* past N_Cr */
+	CHECK(s_last_error == OPEN_LIN_MASTER_ERROR_TP_RX_TIMEOUT);
+
+	/* reassembly context is clean again: a fresh SF response now completes normally */
+	CHECK(open_lin_master_diag_request(0x05, msg, sizeof(msg)) == l_true);
+	open_lin_master_transport_layer_handle_tx(&req_slot);
+	uint8_t resp_sf[8] = {0x05, 0x03, 0xF2, 0x11, 0x22, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t resp_sf_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, resp_sf};
+	open_lin_master_transport_layer_handle_rx(&resp_sf_slot);
+	CHECK(s_master_diag_response_called == l_true);
+	CHECK(s_master_diag_response_len == 3);
 }
 
