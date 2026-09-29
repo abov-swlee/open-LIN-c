@@ -29,7 +29,10 @@
 #include "hal_timer1.h"
 
 /* TIMER1 channel dedicated to the LIN microsecond time base.
- * 32MHz(HSI) / 320 = 100kHz -> 1 tick = 10us.
+ * Timer1 is prescaled down to LIN_TIME_TICK_HZ (100kHz -> 1 tick = 10us),
+ * computed from the actual configured SystemCoreClock (HSI-derived, see
+ * ProductConfig/<chip>/Config/startup_<chip>.h's HSI_CLOCK) rather than a
+ * hardcoded divisor, so it stays correct if the MCLK/HCLK setup ever changes.
  * The 16bit HW counter wraps every 65536 ticks (655.36ms); s_un32TimeHigh
  * extends it to a genuine 32bit tick count via the periodic Match-A event
  * (used in place of an overflow interrupt so the same code works on parts
@@ -39,6 +42,7 @@
  * plain unsigned subtraction, regardless of how short the measured span is. */
 #define LIN_TIME_TIMER1_ID    TIMER1_ID_0
 #define LIN_TIME_US_PER_TICK  10u
+#define LIN_TIME_TICK_HZ      (1000000u / LIN_TIME_US_PER_TICK)
 
 static volatile uint32_t s_un32TimeHigh;
 
@@ -96,13 +100,30 @@ static void Delay(l_u32 delay_us)
 
 static void PRV_LinTimerInit(void)
 {
+    /* NOTE: Timer1's version-specific private headers (Vx/V1x/Fx/F1x, where a
+     * TIMER1_FEATURE_USE_MCCR_CLOCK-style capability flag would live) are only
+     * included by hal_timer1.c itself via hal_timer1_prv.h - they are NOT
+     * visible here, since this file only sees the public hal_timer1.h. So
+     * whether this Timer1 instance has a real MCCR clock mux is declared
+     * explicitly per build target via TIMER1_PERI_CLOCK_ONLY (see each
+     * target's CMakeLists.txt target_compile_definitions), rather than
+     * inferred from a chip/product macro. */
+#if (TIMER1_PERI_CLOCK_ONLY == 1)
+    TIMER1_CLK_CFG_t tClk =
+    {
+        .eClk             = TIMER1_CLK_PCLK,
+        .uSubClk.ePClkDiv = TIMER1_PCLK_DIV_2,  /* ignored by this HAL variant */
+        .un16PreScale     = (uint16_t)(SystemCoreClock / LIN_TIME_TICK_HZ),
+    };
+#else
     TIMER1_CLK_CFG_t tClk =
     {
         .eClk             = TIMER1_CLK_MCCR,
         .uSubClk.eMccr    = TIMER1_CLK_MCCR_MCLK,
-        .un8MccrDiv       = 10,    /* MCLK/10 = 3.2MHz ... */
-        .un16PreScale     = 32,    /* ... / 32 = 100kHz (1 tick = 10us); verified on hardware */
+        .un8MccrDiv       = 10,    /* MCLK/10 -> fed into un16PreScale below */
+        .un16PreScale     = (uint16_t)(SystemCoreClock / 10u / LIN_TIME_TICK_HZ),
     };
+#endif
     TIMER1_CFG_t tCfg =
     {
         .eMode            = TIMER1_MODE_PERIODIC,
