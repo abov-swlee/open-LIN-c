@@ -154,6 +154,15 @@ l_bool open_lin_master_diag_request(open_lin_NAD_t nad, const l_u8 *msg, l_u16 l
  */
 l_bool open_lin_master_diag_request_debug_drop_cf(open_lin_NAD_t nad, const l_u8 *msg, l_u16 len);
 
+/**
+ * @brief Master side: originate a go-to-sleep command (Section 2.6.2) - NAD=0x7F
+ *        broadcast, PCI=0x00, D1..D6=0xFF. Carries no SID/data, so it bypasses
+ *        the tp_tx engine (which treats a zero-length message as "nothing to
+ *        send") and is queued as its own one-shot frame instead.
+ * @return l_false if a diagnostic request is already in progress (same rule as open_lin_master_diag_request()).
+ */
+l_bool open_lin_master_send_go_to_sleep(void);
+
 /** @brief Fill an outgoing 0x3C (master request) frame - hooked from the master data layer. */
 void open_lin_master_transport_layer_handle_tx(open_lin_frame_slot_t *slot);
 
@@ -162,6 +171,9 @@ void open_lin_master_transport_layer_handle_rx(open_lin_frame_slot_t *slot);
 
 /** @brief App hook: called once a diagnostic response (RSID/data) has been fully reassembled. */
 extern void open_lin_master_diag_response_callback(const l_u8 *msg, l_u16 len);
+
+/** @brief Slave side app hook: called once a go-to-sleep command (Section 2.6.2) has been received. */
+extern void open_lin_slave_sleep_callback(void);
 
 #endif /* OPEN_LIN_TRANSPORT_LAYER */
 

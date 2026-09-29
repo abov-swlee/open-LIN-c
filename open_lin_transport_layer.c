@@ -16,6 +16,7 @@ extern l_u8  open_lin_variant_id;
 extern open_lin_frame_slot_t *open_lin_assignable_frames[];
 extern const l_u8 open_lin_assignable_frames_count;
 extern void open_lin_sid_callback(open_lin_SID_t sid);
+extern void open_lin_slave_sleep_callback(void);
 
 #define OPEN_LIN_WILDCARD_SUPPLIER_ID 0x7FFFu /* Table 4.3 */
 #define OPEN_LIN_WILDCARD_FUNCTION_ID 0xFFFFu /* Table 4.3 */
@@ -56,6 +57,7 @@ static t_open_lin_sid_result open_lin_assign_nad_handler(const l_u8 *data, l_u8 
 static t_open_lin_sid_result open_lin_read_by_id_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code);
 static t_open_lin_sid_result open_lin_assign_frame_id_range_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code);
 static l_bool open_lin_id_match(uint16_t val, uint16_t expected, uint16_t wildcard);
+static l_bool open_lin_is_go_to_sleep_frame(const l_u8 *frame8);
 
 /* static service handlers */
 t_open_lin_sid_handler_item open_lin_sid_handlers[] = {
@@ -91,9 +93,36 @@ static open_lin_NAD_t s_master_tp_request_nad;
  * see the header comment on that function. */
 static l_bool s_master_tp_tx_debug_drop_cf = l_false;
 
+/* set by open_lin_master_send_go_to_sleep(), consumed by
+ * open_lin_master_transport_layer_handle_tx() - see the header comment on that function. */
+static l_bool s_master_tp_tx_go_to_sleep_pending = l_false;
+
 static l_bool open_lin_id_match(uint16_t val, uint16_t expected, uint16_t wildcard)
 {
 	return (l_bool)((val == wildcard) || (val == expected));
+}
+
+/* go-to-sleep command, Section 2.6.2: NAD=0x7F (broadcast), PCI=0x00, D1..D6=0xFF.
+ * PCI=0x00 would otherwise decode as a zero-length Single Frame - not a valid
+ * message for any real SID handler (all of them need at least the SID byte) -
+ * so the spec deliberately reuses that "empty" encoding as the sleep marker
+ * instead of a normal node-configuration service. */
+static l_bool open_lin_is_go_to_sleep_frame(const l_u8 *frame8)
+{
+	l_u8 i;
+
+	if ((frame8[0] != OPEN_LIN_NAD_BROADCAST) || (frame8[1] != OPEN_LIN_NAD_SLEEP))
+	{
+		return l_false;
+	}
+	for (i = 2u; i < 8u; i++)
+	{
+		if (frame8[i] != 0xFFu)
+		{
+			return l_false;
+		}
+	}
+	return l_true;
 }
 
 /* assign NAD service implementation, Table 4.7 / Table 4.8
@@ -447,6 +476,12 @@ void open_lin_transport_layer_handle(open_lin_frame_slot_t *slot)
 		return;
 	}
 
+	if (open_lin_is_go_to_sleep_frame(slot->data_ptr) == l_true)
+	{
+		open_lin_slave_sleep_callback();
+		return;
+	}
+
 	if (open_lin_tp_rx_feed(&s_tp_rx_ctx, slot->data_ptr, open_lin_NAD, open_lin_hw_get_time_us()) == l_true)
 	{
 		open_lin_transport_layer_dispatch(s_tp_rx_ctx.buffer, s_tp_rx_ctx.received_len, slot->data_ptr[0]);
@@ -486,12 +521,36 @@ l_bool open_lin_master_diag_request_debug_drop_cf(open_lin_NAD_t nad, const l_u8
 	return result;
 }
 
+l_bool open_lin_master_send_go_to_sleep(void)
+{
+	if (s_master_tp_tx_ctx.active == l_true)
+	{
+		return l_false; /* a request is already in flight - one active session, Section 3.2.2 */
+	}
+
+	s_master_tp_tx_go_to_sleep_pending = l_true;
+	return l_true;
+}
+
 void open_lin_master_transport_layer_handle_tx(open_lin_frame_slot_t *slot)
 {
 	l_bool more;
+	l_u8 i;
 
 	if ((slot == OPEN_LIN_NET_SLOT_EMPTY) || (slot->pid != OPEN_LIN_DIAG_REQUEST))
 	{
+		return;
+	}
+
+	if (s_master_tp_tx_go_to_sleep_pending == l_true)
+	{
+		slot->data_ptr[0] = OPEN_LIN_NAD_BROADCAST;
+		slot->data_ptr[1] = OPEN_LIN_NAD_SLEEP;
+		for (i = 2u; i < 8u; i++)
+		{
+			slot->data_ptr[i] = 0xFFu;
+		}
+		s_master_tp_tx_go_to_sleep_pending = l_false;
 		return;
 	}
 
