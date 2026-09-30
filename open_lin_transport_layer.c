@@ -103,20 +103,18 @@ static l_bool open_lin_id_match(uint16_t val, uint16_t expected, uint16_t wildca
 	return (l_bool)((val == wildcard) || (val == expected));
 }
 
-/* go-to-sleep command, Section 2.6.2: NAD=0x7F (broadcast), PCI=0x00, D1..D6=0xFF.
- * PCI=0x00 would otherwise decode as a zero-length Single Frame - not a valid
- * message for any real SID handler (all of them need at least the SID byte) -
- * so the spec deliberately reuses that "empty" encoding as the sleep marker
- * instead of a normal node-configuration service. */
+/* go-to-sleep command, Section 2.6.3 / Table 2.1 and Table 4.4: NAD (the frame's
+ * first data field) is the dedicated value 0x00 - reserved solely for this
+ * command, distinct from the 0x7F broadcast NAD - with D1..D7 all 0xFF. */
 static l_bool open_lin_is_go_to_sleep_frame(const l_u8 *frame8)
 {
 	l_u8 i;
 
-	if ((frame8[0] != OPEN_LIN_NAD_BROADCAST) || (frame8[1] != OPEN_LIN_NAD_SLEEP))
+	if (frame8[0] != OPEN_LIN_NAD_SLEEP)
 	{
 		return l_false;
 	}
-	for (i = 2u; i < 8u; i++)
+	for (i = 1u; i < 8u; i++)
 	{
 		if (frame8[i] != 0xFFu)
 		{
@@ -545,9 +543,8 @@ void open_lin_master_transport_layer_handle_tx(open_lin_frame_slot_t *slot)
 
 	if (s_master_tp_tx_go_to_sleep_pending == l_true)
 	{
-		slot->data_ptr[0] = OPEN_LIN_NAD_BROADCAST;
-		slot->data_ptr[1] = OPEN_LIN_NAD_SLEEP;
-		for (i = 2u; i < 8u; i++)
+		slot->data_ptr[0] = OPEN_LIN_NAD_SLEEP;
+		for (i = 1u; i < 8u; i++)
 		{
 			slot->data_ptr[i] = 0xFFu;
 		}

@@ -155,10 +155,11 @@ l_bool open_lin_master_diag_request(open_lin_NAD_t nad, const l_u8 *msg, l_u16 l
 l_bool open_lin_master_diag_request_debug_drop_cf(open_lin_NAD_t nad, const l_u8 *msg, l_u16 len);
 
 /**
- * @brief Master side: originate a go-to-sleep command (Section 2.6.2) - NAD=0x7F
- *        broadcast, PCI=0x00, D1..D6=0xFF. Carries no SID/data, so it bypasses
- *        the tp_tx engine (which treats a zero-length message as "nothing to
- *        send") and is queued as its own one-shot frame instead.
+ * @brief Master side: originate a go-to-sleep command (Section 2.6.3, Table 2.1/
+ *        Table 4.4) - NAD=0x00 (the dedicated go-to-sleep NAD, distinct from the
+ *        0x7F broadcast NAD), D1..D7 all 0xFF. Carries no SID/data, so it
+ *        bypasses the tp_tx engine (which treats a zero-length message as
+ *        "nothing to send") and is queued as its own one-shot frame instead.
  * @return l_false if a diagnostic request is already in progress (same rule as open_lin_master_diag_request()).
  */
 l_bool open_lin_master_send_go_to_sleep(void);

@@ -512,18 +512,17 @@ TEST_CASE("master tp poll: N_Cr timeout resets a stalled response reassembly and
 	CHECK(s_master_diag_response_len == 3);
 }
 
-/* ---- Go-to-sleep command, Section 2.6.2 ---- */
+/* ---- Go-to-sleep command, Section 2.6.3 ---- */
 
-TEST_CASE("master: send_go_to_sleep produces NAD=0x7F, PCI=0x00, D1..D6=0xFF", "[open_lin_transport_layer][tp][sleep]") {
+TEST_CASE("master: send_go_to_sleep produces NAD=0x00, D1..D7=0xFF", "[open_lin_transport_layer][tp][sleep]") {
 	CHECK(open_lin_master_send_go_to_sleep() == l_true);
 
 	uint8_t frame[8];
 	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, frame};
 	open_lin_master_transport_layer_handle_tx(&req_slot);
 
-	CHECK(frame[0] == OPEN_LIN_NAD_BROADCAST);
-	CHECK(frame[1] == OPEN_LIN_NAD_SLEEP);
-	for (int i = 2; i < 8; i++) {
+	CHECK(frame[0] == OPEN_LIN_NAD_SLEEP);
+	for (int i = 1; i < 8; i++) {
 		CHECK(frame[i] == 0xFF);
 	}
 }
@@ -542,16 +541,16 @@ TEST_CASE("master: send_go_to_sleep is refused while a request is already in fli
 
 TEST_CASE("slave: a go-to-sleep frame invokes the sleep callback", "[open_lin_transport_layer][tp][sleep]") {
 	s_slave_sleep_called = l_false;
-	uint8_t req[8] = {OPEN_LIN_NAD_BROADCAST, OPEN_LIN_NAD_SLEEP, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+	uint8_t req[8] = {OPEN_LIN_NAD_SLEEP, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
 	open_lin_transport_layer_handle(&req_slot);
 	CHECK(s_slave_sleep_called == l_true);
 }
 
-TEST_CASE("slave: a non-broadcast frame with the same PCI/data pattern is not mistaken for go-to-sleep", "[open_lin_transport_layer][tp][sleep]") {
+TEST_CASE("slave: a frame with a real NAD and the same all-0xFF data is not mistaken for go-to-sleep", "[open_lin_transport_layer][tp][sleep]") {
 	s_slave_sleep_called = l_false;
 	open_lin_NAD = 0x01;
-	uint8_t req[8] = {0x01, OPEN_LIN_NAD_SLEEP, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; /* physical NAD, not 0x7F */
+	uint8_t req[8] = {0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; /* physical NAD, not the reserved 0x00 */
 	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
 	open_lin_transport_layer_handle(&req_slot);
 	CHECK(s_slave_sleep_called == l_false);
