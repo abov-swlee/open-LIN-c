@@ -139,6 +139,11 @@ void open_lin_master_dl_set_asleep(l_bool asleep)
 	master_network_asleep = asleep;
 }
 
+l_bool open_lin_master_dl_is_asleep(void)
+{
+	return master_network_asleep;
+}
+
 l_bool open_lin_master_dl_send_wake_up(void)
 {
 	return open_lin_hw_tx_break();

@@ -178,3 +178,8 @@ void open_lin_slave_set_state_callback(void (*callback)(t_open_lin_slave_state n
 {
 	open_lin_slave_state_callback = callback;
 }
+
+l_bool open_lin_slave_dl_send_wake_up(void)
+{
+	return open_lin_hw_tx_break();
+}

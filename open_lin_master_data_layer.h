@@ -36,6 +36,13 @@ l_u32 open_lin_master_dl_get_frame_start_time_us();
 void open_lin_master_dl_set_asleep(l_bool asleep);
 
 /**
+ * @brief Query whether the master's schedule is currently paused (Section
+ *        2.6) - lets the app decide whether to poll the schedule handler or
+ *        listen for an incoming wake-up signal instead, see main()'s loop.
+ */
+l_bool open_lin_master_dl_is_asleep(void);
+
+/**
  * @brief Send a bare wake-up signal (Section 2.6.3): break only, with no
  *        sync/PID/data following - that absence is what distinguishes it from
  *        a real header. Does not resume the schedule by itself; the caller
