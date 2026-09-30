@@ -17,6 +17,7 @@ extern open_lin_frame_slot_t *open_lin_assignable_frames[];
 extern const l_u8 open_lin_assignable_frames_count;
 extern void open_lin_sid_callback(open_lin_SID_t sid);
 extern void open_lin_slave_sleep_callback(void);
+extern void open_lin_master_sleep_sent_callback(void);
 
 #define OPEN_LIN_WILDCARD_SUPPLIER_ID 0x7FFFu /* Table 4.3 */
 #define OPEN_LIN_WILDCARD_FUNCTION_ID 0xFFFFu /* Table 4.3 */
@@ -551,6 +552,7 @@ void open_lin_master_transport_layer_handle_tx(open_lin_frame_slot_t *slot)
 			slot->data_ptr[i] = 0xFFu;
 		}
 		s_master_tp_tx_go_to_sleep_pending = l_false;
+		open_lin_master_sleep_sent_callback();
 		return;
 	}
 

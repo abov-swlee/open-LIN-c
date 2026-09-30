@@ -175,6 +175,14 @@ extern void open_lin_master_diag_response_callback(const l_u8 *msg, l_u16 len);
 /** @brief Slave side app hook: called once a go-to-sleep command (Section 2.6.2) has been received. */
 extern void open_lin_slave_sleep_callback(void);
 
+/**
+ * @brief Master side app hook: called once the go-to-sleep frame queued by
+ *        open_lin_master_send_go_to_sleep() has actually gone out on the bus
+ *        (not just queued) - the right moment to also pause the master's own
+ *        schedule via open_lin_master_dl_set_asleep(l_true), Section 2.6.
+ */
+extern void open_lin_master_sleep_sent_callback(void);
+
 #endif /* OPEN_LIN_TRANSPORT_LAYER */
 
 #endif /* OPEN_LIN_TRANSPORT_LAYER_H_ */

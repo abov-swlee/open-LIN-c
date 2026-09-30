@@ -21,6 +21,7 @@ static t_master_frame_table_item *master_frame_table;
 static l_u8 master_frame_table_size = 0;
 
 static l_u32 frame_start_time_us = 0;
+static l_bool master_network_asleep = l_false;
 
 static void open_lin_master_goto_idle(l_bool next_item);
 static void data_layer_next_item(void);
@@ -133,9 +134,24 @@ l_bool open_lin_master_dl_rx(l_u8 rx_byte)
 }
 
 
+void open_lin_master_dl_set_asleep(l_bool asleep)
+{
+	master_network_asleep = asleep;
+}
+
+l_bool open_lin_master_dl_send_wake_up(void)
+{
+	return open_lin_hw_tx_break();
+}
+
 void open_lin_master_dl_handler()
 {
 	t_master_frame_table_item* master_table_item = get_current_item();
+
+	if (master_network_asleep == l_true)
+	{
+		return; /* network asleep, Section 2.6 - stay silent until open_lin_master_dl_set_asleep(l_false) */
+	}
 
 	if (master_frame_table_size > 0u)
 	{

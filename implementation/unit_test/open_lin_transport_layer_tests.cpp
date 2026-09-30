@@ -56,6 +56,10 @@ void open_lin_master_diag_response_callback(const l_u8 *msg, l_u16 len)
 /* captures the last call, for the go-to-sleep tests below */
 static l_bool s_slave_sleep_called = l_false;
 void open_lin_slave_sleep_callback(void) { s_slave_sleep_called = l_true; }
+
+/* captures the last call, for the master sleep-sent test below */
+static l_bool s_master_sleep_sent_called = l_false;
+void open_lin_master_sleep_sent_callback(void) { s_master_sleep_sent_called = l_true; }
 }
 
 /* Assign NAD request, Table 4.7: D1=supplier LSB, D2=supplier MSB, D3=function LSB,
@@ -551,5 +555,16 @@ TEST_CASE("slave: a non-broadcast frame with the same PCI/data pattern is not mi
 	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
 	open_lin_transport_layer_handle(&req_slot);
 	CHECK(s_slave_sleep_called == l_false);
+}
+
+TEST_CASE("master: sleep_sent callback fires only once the frame is actually transmitted", "[open_lin_transport_layer][tp][sleep]") {
+	s_master_sleep_sent_called = l_false;
+	CHECK(open_lin_master_send_go_to_sleep() == l_true);
+	CHECK(s_master_sleep_sent_called == l_false); /* queued, not sent yet */
+
+	uint8_t frame[8];
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, frame};
+	open_lin_master_transport_layer_handle_tx(&req_slot);
+	CHECK(s_master_sleep_sent_called == l_true);
 }
 
