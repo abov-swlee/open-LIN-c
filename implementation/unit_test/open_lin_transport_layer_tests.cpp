@@ -29,6 +29,8 @@ open_lin_frame_slot_t afr_slot_1 = {0x02, OPEN_LIN_FRAME_TYPE_RECEIVE,  1, &afr_
 open_lin_frame_slot_t afr_slot_2 = {0x0E, OPEN_LIN_FRAME_TYPE_RECEIVE,  1, &afr_data_2};
 open_lin_frame_slot_t *open_lin_assignable_frames[] = {&afr_slot_0, &afr_slot_1, &afr_slot_2};
 extern const uint8_t open_lin_assignable_frames_count = sizeof(open_lin_assignable_frames) / sizeof(open_lin_assignable_frames[0]); /* C++: plain "const" defaults to internal linkage, even inside extern "C" */
+/* Assign Frame Id's (SID 0xB1) message-id lookup under test, 1:1 with open_lin_assignable_frames[] above. */
+extern const uint16_t open_lin_assignable_frame_message_ids[] = {0x0000, 0x0001, 0x0002};
 
 /* Minimal HW time stub for open_lin_transport_layer_handle()'s N_Cr timestamping;
  * the engine-level tests below (open_lin_tp_rx_feed/open_lin_tp_tx_next) take the
@@ -217,6 +219,72 @@ TEST_CASE("dispatch: assign frame id range rejects an out-of-range non-wildcard 
 	open_lin_transport_layer_handle(&req_slot);
 
 	CHECK(afr_slot_2.pid == 0x0E); /* rejected atomically: even the in-range slot is untouched */
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	for (int i = 0; i < 8; i++) {
+		CHECK(resp[i] == 0xFF); /* nothing queued -> idle frame */
+	}
+}
+
+TEST_CASE("dispatch: assign frame id (LIN 2.0) reassigns a frame by message id", "[open_lin_transport_layer][tp]") {
+	open_lin_NAD = 0x01;
+	open_lin_supplier_id = 0x1234;
+	afr_slot_0.pid = 0x01;
+	afr_slot_1.pid = 0x02;
+	afr_slot_2.pid = 0x0E;
+
+	/* Table 2.4: D1/D2=supplier LSB/MSB, D3/D4=message id LSB/MSB, D5=protected id.
+	 * message id 1 -> afr_slot_1 (see open_lin_assignable_frame_message_ids[] above). */
+	uint8_t req[8] = {0x01, 0x06, 0xB1, 0x34, 0x12, 0x01, 0x00, 0x05};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	CHECK(afr_slot_1.pid == 0x05);
+	CHECK(afr_slot_0.pid == 0x01); /* untouched */
+	CHECK(afr_slot_2.pid == 0x0E); /* untouched */
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+
+	CHECK(resp[0] == 0x01);
+	CHECK((resp[1] & 0x0F) == 1); /* RSID only, no data - Table 2.5 */
+	CHECK(resp[2] == 0xF1); /* RSID = SID(0xB1) + 0x40 */
+}
+
+TEST_CASE("dispatch: assign frame id with an unrecognized message id stays silent", "[open_lin_transport_layer][tp]") {
+	open_lin_NAD = 0x01;
+	open_lin_supplier_id = 0x1234;
+	afr_slot_1.pid = 0x02;
+
+	uint8_t req[8] = {0x01, 0x06, 0xB1, 0x34, 0x12, 0x99, 0x00, 0x05}; /* message id 0x0099, not assigned to any slot */
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	CHECK(afr_slot_1.pid == 0x02); /* unchanged */
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	for (int i = 0; i < 8; i++) {
+		CHECK(resp[i] == 0xFF); /* nothing queued -> idle frame */
+	}
+}
+
+TEST_CASE("dispatch: assign frame id rejects identifiers 0x3C and up", "[open_lin_transport_layer][tp]") {
+	open_lin_NAD = 0x01;
+	open_lin_supplier_id = 0x1234;
+	afr_slot_0.pid = 0x01;
+
+	/* message id 0 (afr_slot_0) but requested protected id's raw id is 0x3C -
+	 * Section 2.5.1: "frames with identifier 60 (0x3c) and up can not be changed". */
+	uint8_t req[8] = {0x01, 0x06, 0xB1, 0x34, 0x12, 0x00, 0x00, 0x3C};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	CHECK(afr_slot_0.pid == 0x01); /* unchanged */
 
 	uint8_t resp[8];
 	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};

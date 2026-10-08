@@ -17,6 +17,7 @@ typedef l_u8 open_lin_SID_t;
 
 typedef enum {
 	OPEN_LIN_SID_ASSIGN_NAD = 0xB0,
+	OPEN_LIN_SID_ASSIGN_FRAME_ID = 0xB1, /**< LIN 2.0 compatibility, Section 2.5.1 - superseded by Assign Frame ID Range (0xB7) in 2.1+ */
 	OPEN_LIN_SID_READ_BY_ID = 0xB2,
 	OPEN_LIN_SID_CONDITIONAL_CHANGE_NAD = 0xB3,
 	OPEN_LIN_SID_DUMP_DATA = 0xB4,

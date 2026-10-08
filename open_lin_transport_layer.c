@@ -15,6 +15,10 @@ extern l_u16 open_lin_function_id;
 extern l_u8  open_lin_variant_id;
 extern open_lin_frame_slot_t *open_lin_assignable_frames[];
 extern const l_u8 open_lin_assignable_frames_count;
+/* LIN 2.0 compatibility (Section 2.5.1): message id per entry, 1:1 with
+ * open_lin_assignable_frames[] above - Assign Frame Id identifies a frame by
+ * this value, unlike Assign Frame ID Range's table index. */
+extern const l_u16 open_lin_assignable_frame_message_ids[];
 extern void open_lin_sid_callback(open_lin_SID_t sid);
 extern void open_lin_slave_sleep_callback(void);
 extern void open_lin_master_sleep_sent_callback(void);
@@ -55,6 +59,7 @@ typedef struct {
 
 /* static function definitions */
 static t_open_lin_sid_result open_lin_assign_nad_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code);
+static t_open_lin_sid_result open_lin_assign_frame_id_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code);
 static t_open_lin_sid_result open_lin_read_by_id_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code);
 static t_open_lin_sid_result open_lin_assign_frame_id_range_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code);
 static l_bool open_lin_id_match(uint16_t val, uint16_t expected, uint16_t wildcard);
@@ -63,6 +68,7 @@ static l_bool open_lin_is_go_to_sleep_frame(const l_u8 *frame8);
 /* static service handlers */
 t_open_lin_sid_handler_item open_lin_sid_handlers[] = {
 		{OPEN_LIN_SID_ASSIGN_NAD, open_lin_assign_nad_handler},
+		{OPEN_LIN_SID_ASSIGN_FRAME_ID, open_lin_assign_frame_id_handler},
 		{OPEN_LIN_SID_READ_BY_ID, open_lin_read_by_id_handler},
 		{OPEN_LIN_SID_ASSIGN_FRAME_ID_RANGE, open_lin_assign_frame_id_range_handler}
 };
@@ -176,6 +182,47 @@ static t_open_lin_sid_result open_lin_read_by_id_handler(const l_u8 *data, l_u8 
 	 * implemented yet; 2-31 and 64-255 are reserved. */
 	*error_code = OPEN_LIN_ERR_IDENTIFIER_NOT_SUPPORTED;
 	return OPEN_LIN_SID_RESULT_NEGATIVE;
+}
+
+/* assign frame id service implementation - LIN 2.0 Diag and Config Spec,
+ * Section 2.5.1 / Table 2.4 (superseded by Assign Frame ID Range in 2.1+,
+ * kept here only so this master/slave can still configure/be configured by a
+ * genuine LIN 2.0 node). data[0..4] = D1..D5 = supplier id (LSB,MSB), message
+ * id (LSB,MSB), protected id. Unlike Assign NAD/Read By Id, Table 2.4's own
+ * text says a response is sent "if the NAD and the Supplier ID match" - no
+ * Function ID check. Frames with identifier 0x3C and up (diagnostic,
+ * user-defined, reserved) can not be reassigned this way. */
+static t_open_lin_sid_result open_lin_assign_frame_id_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code)
+{
+	uint16_t sup = data[0] | (((uint16_t)data[1]) << 8);
+	uint16_t msg_id = data[2] | (((uint16_t)data[3]) << 8);
+	l_u8 raw_id = data[4] & OPEN_LIN_ID_MASK;
+	l_u8 i;
+
+	(void)resp_data;
+	(void)error_code;
+
+	if (!open_lin_id_match(sup, open_lin_supplier_id, OPEN_LIN_WILDCARD_SUPPLIER_ID))
+	{
+		return OPEN_LIN_SID_RESULT_NO_RESPONSE;
+	}
+
+	if (raw_id >= 0x3Cu)
+	{
+		return OPEN_LIN_SID_RESULT_NO_RESPONSE; /* "can not be changed" - Section 2.5.1 */
+	}
+
+	for (i = 0u; i < open_lin_assignable_frames_count; i++)
+	{
+		if (open_lin_assignable_frame_message_ids[i] == msg_id)
+		{
+			open_lin_assignable_frames[i]->pid = (open_lin_pid_t)raw_id;
+			*resp_len = 0u; /* Table 2.5: positive response carries no data, RSID only */
+			return OPEN_LIN_SID_RESULT_POSITIVE;
+		}
+	}
+
+	return OPEN_LIN_SID_RESULT_NO_RESPONSE; /* message id not recognized */
 }
 
 /* assign frame id range service implementation, Table 4.16 / Table 4.17
