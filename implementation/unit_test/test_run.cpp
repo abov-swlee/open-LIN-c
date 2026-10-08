@@ -257,6 +257,64 @@ TEST_CASE("frame reception, classic-checksum slot excludes the pid from the chec
 	CHECK(dataBuffer4[0] == 0x11);
 }
 
+TEST_CASE("response_error: set on a forced error, folded into the designated frame, cleared after a successful send", "[open_lin_slave][response_error]")
+{
+	open_lin_slave_dl_set_response_error_frame(0x01, 0, 7); /* same wiring as slave.c */
+
+	open_lin_slave_dl_debug_force_response_error();
+	CHECK(open_lin_slave_dl_get_response_error() == l_true);
+
+	open_lin_slave_reset();
+	sim_break = true;
+	open_lin_slave_rx_header(0);
+	open_lin_slave_rx_header(0x55);
+	open_lin_slave_rx_header(0xC1); /* parity(0x01) */
+
+	CHECK((dataBuffer2[0] & 0x80) != 0); /* bit folded into the designated byte before tx */
+	CHECK(open_lin_slave_dl_get_response_error() == l_false); /* cleared once that send succeeded */
+
+	open_lin_slave_reset();
+	sim_break = true;
+	open_lin_slave_rx_header(0);
+	open_lin_slave_rx_header(0x55);
+	open_lin_slave_rx_header(0xC1);
+
+	CHECK((dataBuffer2[0] & 0x80) == 0); /* a clean send now carries the bit cleared */
+
+	/* this test deliberately sends a frame whose checksum won't match the
+	 * stub's hardcoded 0x22 (the response_error bit mutates dataBuffer2) -
+	 * don't leak that into later tests that check tx_invalid. */
+	tx_invalid = false;
+}
+
+TEST_CASE("response_error: set on invalid checksum of an owned RX frame", "[open_lin_slave][response_error]")
+{
+	open_lin_slave_dl_set_response_error_frame(0x01, 0, 7);
+
+	open_lin_slave_reset();
+	sim_break = true;
+	open_lin_slave_rx_header(0);
+	open_lin_slave_rx_header(0x55);
+	open_lin_slave_rx_header(0x92); // PID 0x12 (slot_array[0], RECEIVE) - any owned frame counts, not just the designated one
+
+	open_lin_slave_rx_header(0x00);
+	open_lin_slave_rx_header(0x01);
+	open_lin_slave_rx_header(0x02);
+	open_lin_slave_rx_header(0x03);
+	open_lin_slave_rx_header(0x22); /* wrong checksum on purpose */
+
+	CHECK(get_and_clear_sim_error() == OPEN_LIN_SLAVE_ERROR_INVALID_CHECKSUM);
+	CHECK(open_lin_slave_dl_get_response_error() == l_true);
+
+	/* leave it cleared for whichever test runs next */
+	open_lin_slave_reset();
+	sim_break = true;
+	open_lin_slave_rx_header(0);
+	open_lin_slave_rx_header(0x55);
+	open_lin_slave_rx_header(0xC1);
+	tx_invalid = false;
+}
+
 #ifdef OPEN_LIN_DYNAMIC_IDS
 	open_lin_id_translation_item_t open_lin_id_translation_tab[] = {
 			{0x12,0x12},

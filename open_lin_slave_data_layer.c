@@ -18,6 +18,36 @@ static void (*open_lin_slave_state_callback)(t_open_lin_slave_state new_state);
 
 static l_u8 open_lin_slave_state_data_count;
 
+/* Section 2.7.3: response_error status management. Set whenever a frame this
+ * node owns (one of its own RX or TX frames, matched via open_lin_slave_set_lin_frame())
+ * has an error in its response; cleared once the designated frame carrying the
+ * bit is itself transmitted successfully. Event-triggered frame responses are
+ * explicitly excluded (2.7.2) - moot today since this stack has no
+ * event-triggered frame support yet (see the LDF-driven scheduling gap). */
+static l_bool s_response_error = l_false;
+static l_bool s_response_error_frame_configured = l_false;
+static open_lin_pid_t s_response_error_pid;
+static l_u8 s_response_error_byte_index;
+static l_u8 s_response_error_bit_index;
+
+void open_lin_slave_dl_set_response_error_frame(open_lin_pid_t pid, l_u8 byte_index, l_u8 bit_index)
+{
+	s_response_error_pid = pid;
+	s_response_error_byte_index = byte_index;
+	s_response_error_bit_index = bit_index;
+	s_response_error_frame_configured = l_true;
+}
+
+void open_lin_slave_dl_debug_force_response_error(void)
+{
+	s_response_error = l_true;
+}
+
+l_bool open_lin_slave_dl_get_response_error(void)
+{
+	return s_response_error;
+}
+
 static void open_lin_slave_set_state(t_open_lin_slave_state new_state)
 {
 	open_lin_slave_state = new_state;
@@ -117,16 +147,38 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 					{
 						open_lin_set_rx_enabled(l_false); // Prevent receiving data transmitted by itself(Slave)
 						open_lin_net_tx_handler(open_lin_data_layer_frame.pid);
+
+						/* Section 2.7.3: fold the current response_error status into the
+						 * designated frame's data, after the app fills it but before the
+						 * checksum (which must cover this bit too) is computed. */
+						if (s_response_error_frame_configured &&
+						    (open_lin_data_layer_frame.pid == s_response_error_pid) &&
+						    (s_response_error_byte_index < open_lin_data_layer_frame.length))
+						{
+							if (s_response_error)
+							{
+								open_lin_data_layer_frame.data_ptr[s_response_error_byte_index] |= (l_u8)(1u << s_response_error_bit_index);
+							} else
+							{
+								open_lin_data_layer_frame.data_ptr[s_response_error_byte_index] &= (l_u8)~(1u << s_response_error_bit_index);
+							}
+						}
+
 						open_lin_data_layer_frame.checksum = open_lin_data_layer_checksum(open_lin_data_layer_frame.pid, open_lin_data_layer_frame.checksum_type,
 																open_lin_data_layer_frame.length, open_lin_data_layer_frame.data_ptr);
 						if ((open_lin_hw_tx_data(open_lin_data_layer_frame.data_ptr, open_lin_data_layer_frame.length) == l_false) ||
 						   (open_lin_hw_tx_data(&open_lin_data_layer_frame.checksum, (l_u8)sizeof(open_lin_data_layer_frame.checksum)) == l_false))
 						{
 							open_lin_error_handler(OPEN_LIN_SLAVE_ERROR_HW_TX);
+							s_response_error = l_true; /* Section 2.7.3: error transmitting a frame this node owns */
 							open_lin_slave_reset();
 							break;
 						} else
 						{
+							if (s_response_error_frame_configured && (open_lin_data_layer_frame.pid == s_response_error_pid))
+							{
+								s_response_error = l_false; /* Section 2.7.3: cleared once reported successfully */
+							}
 							open_lin_slave_reset();
 							break;
 						}
@@ -158,6 +210,7 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 					} else
 					{
 						open_lin_error_handler(OPEN_LIN_SLAVE_ERROR_INVALID_CHECKSUM);
+						s_response_error = l_true; /* Section 2.7.3: error receiving a frame this node owns */
 					}
 					open_lin_slave_reset();
 					break;

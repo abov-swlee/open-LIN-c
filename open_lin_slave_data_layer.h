@@ -43,4 +43,36 @@ void open_lin_slave_set_state_callback(void (*callback)(t_open_lin_slave_state n
  */
 l_bool open_lin_slave_dl_send_wake_up(void);
 
+/**
+ * @brief Section 2.7.3: designate which of this slave's own transmitted
+ *        frames carries the mandatory one-bit response_error status signal,
+ *        and where in that frame's data it lives. The library ORs the
+ *        current status into that bit right before the frame goes out
+ *        (after the app's open_lin_net_tx_handler() fills the rest of the
+ *        data, before the checksum is computed), and clears it once that
+ *        specific frame has been transmitted successfully - the app doesn't
+ *        need to touch it at all beyond calling this once at init.
+ * @param[in] pid         The (unparitied) id of one of this node's own TX frames.
+ * @param[in] byte_index  Index into that frame's data (must be < its data_length).
+ * @param[in] bit_index   Bit position within that byte (0-7).
+ */
+void open_lin_slave_dl_set_response_error_frame(open_lin_pid_t pid, l_u8 byte_index, l_u8 bit_index);
+
+/**
+ * @brief Section 2.7.1: current value of this node's response_error status -
+ *        exposed so the application can also act on it directly (e.g. enter
+ *        a limp-home mode, which 2.7.1 names as the point of all this), not
+ *        just see it folded into the designated frame on the bus.
+ */
+l_bool open_lin_slave_dl_get_response_error(void);
+
+/**
+ * @brief Debug/test only: force response_error true without a real protocol
+ *        error, so its appearance in the designated frame (and automatic
+ *        clearing once that frame is next sent) can be observed on real
+ *        hardware without needing to physically fault-inject a checksum or
+ *        HW TX error.
+ */
+void open_lin_slave_dl_debug_force_response_error(void);
+
 #endif /* OPEN_LIN_SLAVE_DATA_LAYER_H_ */
