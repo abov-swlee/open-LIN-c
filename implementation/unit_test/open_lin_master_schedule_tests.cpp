@@ -35,8 +35,23 @@ l_bool open_lin_hw_rx_byte(l_u8 *data, l_u32 timeout_us)
 	return l_false;
 }
 void open_lin_master_dl_rx_callback(open_lin_frame_slot_t *slot) { if (s_on_rx_callback) s_on_rx_callback(slot); }
-void open_lin_master_transport_layer_handle_tx(open_lin_frame_slot_t *slot) { (void)slot; }
-void open_lin_master_transport_layer_handle_rx(open_lin_frame_slot_t *slot) { (void)slot; }
+/* Diagnostic transport layer stand-in: a request of N frames is pending until N 0x3C slots have run,
+ * then a response is awaited until a 0x3D slot delivers one. */
+static l_bool s_stub_tx_pending = l_false;
+static l_bool s_stub_resp_expected = l_false;
+static int s_stub_tx_frames_left = 0;
+l_bool open_lin_master_diag_tx_pending(void) { return s_stub_tx_pending; }
+l_bool open_lin_master_diag_response_expected(l_u32 now_us) { (void)now_us; return s_stub_resp_expected; }
+void open_lin_master_transport_layer_handle_tx(open_lin_frame_slot_t *slot)
+{
+	(void)slot;
+	if ((s_stub_tx_frames_left > 0) && (--s_stub_tx_frames_left == 0))
+	{
+		s_stub_tx_pending = l_false;
+		s_stub_resp_expected = l_true;
+	}
+}
+void open_lin_master_transport_layer_handle_rx(open_lin_frame_slot_t *slot) { (void)slot; s_stub_resp_expected = l_false; }
 
 static l_u8 buf_a1[1] = {0x11}, buf_a2[1] = {0x22};
 static l_u8 buf_b1[1] = {0x33}, buf_b2[1] = {0x44}, buf_b3[1] = {0x55};
@@ -72,6 +87,10 @@ static void reset_sim(void)
 	s_rx_pos = 0;
 	s_on_rx_callback = 0;
 	s_errors.clear();
+	s_stub_tx_pending = l_false;
+	s_stub_resp_expected = l_false;
+	s_stub_tx_frames_left = 0;
+	open_lin_master_dl_set_diagnostic_tables(NULL, 0, NULL, 0);
 }
 
 TEST_CASE("switch_schedule_table rejects NULL and empty tables", "[open_lin_master_schedule]")
@@ -291,6 +310,114 @@ TEST_CASE("event-triggered response with an unknown PID is an error, not a colli
 	CHECK(s_errors[0] == OPEN_LIN_MASTER_ERROR_EVENT_UNKNOWN_PID);
 	CHECK(s_rx_count == 0);
 	CHECK(sent_pid(2) == open_lin_data_layer_parity(0x02));        /* no collision switch */
+}
+
+/* ---- Diagnostic schedules (Diagnostic Spec 5.4, Diagnostics Interleaved Mode) ---- */
+static l_u8 buf_diag_req[8], buf_diag_resp[8];
+static t_master_frame_table_item mrf_table[] = {
+	{100000, {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, buf_diag_req}, NULL},
+};
+static t_master_frame_table_item srf_table[] = {
+	{100000, {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, buf_diag_resp}, NULL},
+};
+
+static void register_diag_tables(void)
+{
+	open_lin_master_dl_set_diagnostic_tables(mrf_table, TABLE_SIZE(mrf_table), srf_table, TABLE_SIZE(srf_table));
+}
+
+/* A request of `frames` frames is queued: pending until that many 0x3C slots have run, then a response is awaited */
+static void queue_request(int frames)
+{
+	s_stub_tx_pending = l_true;
+	s_stub_tx_frames_left = frames;
+}
+
+static void feed_diag_response(void)
+{
+	l_u8 data[8] = {0x01, 0x02, 0xF0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+	for (int i = 0; i < 8; i++) s_rx_feed.push_back(data[i]);
+	s_rx_feed.push_back(open_lin_data_layer_checksum(OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_CHECKSUM_ENHANCED, 8, data));
+}
+
+static void expect_pids(std::initializer_list<uint8_t> ids)
+{
+	REQUIRE(s_frames.size() == ids.size());
+	size_t n = 0;
+	for (uint8_t id : ids)
+	{
+		CHECK(sent_pid(n) == open_lin_data_layer_parity(id));
+		n++;
+	}
+}
+
+TEST_CASE("diagnostic schedules: MRF per request frame, then SRF until the response arrives, each between full normal runs", "[open_lin_master_schedule][diag]")
+{
+	reset_sim();
+	register_diag_tables();
+	open_lin_master_dl_init(table_a, TABLE_SIZE(table_a));
+	run(1);                                    /* 0x01: the normal schedule is mid-run */
+	queue_request(2);                          /* a 2 frame request arrives */
+	feed_diag_response();
+	run(11);
+	expect_pids({0x01, 0x02,                   /* the running normal schedule finishes first */
+	             0x3C, 0x01, 0x02,             /* MRF, then a normal run */
+	             0x3C, 0x01, 0x02,             /* MRF for the last request frame, normal run */
+	             0x3D, 0x01, 0x02,             /* SRF collects the response, normal run */
+	             0x01});                       /* nothing left to do */
+	CHECK(s_errors.empty());
+}
+
+TEST_CASE("diagnostic schedules: SRF repeats between normal runs while no response comes, until none is expected", "[open_lin_master_schedule][diag]")
+{
+	reset_sim();
+	register_diag_tables();
+	open_lin_master_dl_init(table_a, TABLE_SIZE(table_a));
+	s_stub_resp_expected = l_true;
+	run(2);                                    /* 0x01, 0x02 */
+	run(1);                                    /* 0x3D, unanswered */
+	run(2);
+	run(1);                                    /* 0x3D again */
+	s_stub_resp_expected = l_false;            /* P2max gives out */
+	run(4);
+	expect_pids({0x01, 0x02, 0x3D, 0x01, 0x02, 0x3D, 0x01, 0x02, 0x01, 0x02});
+	REQUIRE(s_errors.size() == 2);
+	CHECK(s_errors[0] == OPEN_LIN_MASTER_ERROR_FRAME_SLOT_TIMEOUT);
+	CHECK(s_errors[1] == OPEN_LIN_MASTER_ERROR_FRAME_SLOT_TIMEOUT);
+}
+
+TEST_CASE("diagnostic schedules: without registered tables a pending request changes nothing", "[open_lin_master_schedule][diag]")
+{
+	reset_sim();
+	open_lin_master_dl_init(table_a, TABLE_SIZE(table_a));
+	queue_request(1);
+	run(4);
+	expect_pids({0x01, 0x02, 0x01, 0x02});
+}
+
+TEST_CASE("diagnostic schedules: a table switch requested by the application cancels a diagnostic schedule about to run", "[open_lin_master_schedule][diag]")
+{
+	reset_sim();
+	register_diag_tables();
+	open_lin_master_dl_init(table_a, TABLE_SIZE(table_a));
+	queue_request(1);
+	run(2);                                    /* 0x01, 0x02: the MRF is now the active table, not yet run */
+	open_lin_master_dl_switch_schedule_table(table_b, TABLE_SIZE(table_b));
+	run(3);
+	expect_pids({0x01, 0x02, 0x0A, 0x0B, 0x0C});
+}
+
+TEST_CASE("diagnostic schedules: a collision on the last entry still lets a waiting request go once resolved", "[open_lin_master_schedule][diag]")
+{
+	reset_sim();
+	register_diag_tables();
+	open_lin_master_dl_init(table_ev_last, TABLE_SIZE(table_ev_last));
+	queue_request(1);
+	run(1);                                    /* 0x01 */
+	feed_event_response(0xAA, 0xBB, false);
+	run(1);                                    /* 0x06 collides - and being the last entry, the normal run ends here */
+	run(3);                                    /* 0x30, 0x31, then the MRF instead of 0x01 */
+	expect_pids({0x01, 0x06, 0x30, 0x31, 0x3C});
 }
 
 TEST_CASE("switching tables while a collision is being resolved cancels the resolving", "[open_lin_master_schedule]")

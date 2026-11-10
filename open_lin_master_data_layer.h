@@ -32,6 +32,20 @@ typedef enum {
 void open_lin_master_dl_init(t_master_frame_table_item *p_master_frame_table, l_u8 p_master_frame_table_size);
 
 /**
+ * @brief Diagnostic Spec 5.4 (Diagnostics Interleaved Mode): register the diagnostic
+ *        master request schedule table (MRF_schedule, one 0x3C TX slot) and the
+ *        diagnostic slave response schedule table (SRF_schedule, one 0x3D RX slot).
+ *        Once registered, the normal schedule needs no 0x3C/0x3D slots of its own:
+ *        when the current normal schedule has run through, the master runs the MRF
+ *        table once for each request frame still to be sent, and the SRF table once
+ *        for each poll while a response is awaited, with a full normal schedule run
+ *        in between each. Without this call the old behavior is unchanged.
+ *        An application-requested table switch cancels a diagnostic schedule in progress.
+ */
+void open_lin_master_dl_set_diagnostic_tables(t_master_frame_table_item *p_mrf_table, l_u8 p_mrf_size,
+                                              t_master_frame_table_item *p_srf_table, l_u8 p_srf_size);
+
+/**
  * @brief Request a switch to another schedule table (LDF Schedule_tables).
  *        The switch happens between frames: a frame slot already in progress
  *        finishes first, then the new table starts at its first entry.

@@ -28,6 +28,18 @@ static t_master_frame_table_item *resume_table = (t_master_frame_table_item *)0;
 static l_u8 resume_table_size = 0;
 static l_u8 resume_index = 0;
 
+/* Diagnostic Spec 5.4: MRF/SRF schedule tables run between executions of the normal schedule */
+#define DIAG_PHASE_NONE 0u
+#define DIAG_PHASE_MRF  1u
+#define DIAG_PHASE_SRF  2u
+static t_master_frame_table_item *diag_mrf_table = (t_master_frame_table_item *)0;
+static l_u8 diag_mrf_table_size = 0;
+static t_master_frame_table_item *diag_srf_table = (t_master_frame_table_item *)0;
+static l_u8 diag_srf_table_size = 0;
+static l_u8 diag_phase = DIAG_PHASE_NONE;
+static t_master_frame_table_item *diag_return_table = (t_master_frame_table_item *)0;
+static l_u8 diag_return_table_size = 0;
+
 static l_u32 frame_start_time_us = 0;
 static l_bool master_network_asleep = l_false;
 
@@ -64,8 +76,18 @@ void open_lin_master_dl_init(t_master_frame_table_item *p_master_frame_table, l_
 	master_frame_table_size = p_master_frame_table_size;
 	pending_table = (t_master_frame_table_item *)0;
 	collision_active = l_false;
+	diag_phase = DIAG_PHASE_NONE;
 	master_table_index = 0;
 	open_lin_master_goto_idle(l_false);
+}
+
+void open_lin_master_dl_set_diagnostic_tables(t_master_frame_table_item *p_mrf_table, l_u8 p_mrf_size,
+                                              t_master_frame_table_item *p_srf_table, l_u8 p_srf_size)
+{
+	diag_mrf_table = p_mrf_table;
+	diag_mrf_table_size = p_mrf_size;
+	diag_srf_table = p_srf_table;
+	diag_srf_table_size = p_srf_size;
 }
 
 l_bool open_lin_master_dl_switch_schedule_table(t_master_frame_table_item *p_table, l_u8 p_size)
@@ -84,6 +106,40 @@ static t_master_frame_table_item* get_current_item(void)
 	return &(master_frame_table[master_table_index]);
 }
 
+/* Diagnostic Spec 5.4.3.1: the normal schedule has just run through - if a request frame is waiting
+ * to go out, run the MRF table once; else if a response is awaited, run the SRF table once. */
+static void start_diagnostic_schedule_if_needed(void)
+{
+#ifdef OPEN_LIN_TRANSPORT_LAYER
+	t_master_frame_table_item *table = (t_master_frame_table_item *)0;
+	l_u8 size = 0u;
+	l_u8 phase = DIAG_PHASE_NONE;
+
+	if ((diag_mrf_table != (t_master_frame_table_item *)0) && (diag_mrf_table_size > 0u) && (open_lin_master_diag_tx_pending() == l_true))
+	{
+		table = diag_mrf_table;
+		size = diag_mrf_table_size;
+		phase = DIAG_PHASE_MRF;
+	} else if ((diag_srf_table != (t_master_frame_table_item *)0) && (diag_srf_table_size > 0u) &&
+	           (open_lin_master_diag_response_expected(open_lin_hw_get_time_us()) == l_true))
+	{
+		table = diag_srf_table;
+		size = diag_srf_table_size;
+		phase = DIAG_PHASE_SRF;
+	}
+
+	if (phase != DIAG_PHASE_NONE)
+	{
+		diag_return_table = master_frame_table;
+		diag_return_table_size = master_frame_table_size;
+		master_frame_table = table;
+		master_frame_table_size = size;
+		master_table_index = 0;
+		diag_phase = phase;
+	}
+#endif
+}
+
 static void data_layer_next_item(void)
 {
 
@@ -96,9 +152,21 @@ static void data_layer_next_item(void)
 			master_frame_table_size = resume_table_size;
 			master_table_index = resume_index;
 			collision_active = l_false;
+			if (master_table_index == 0u)
+			{
+				start_diagnostic_schedule_if_needed(); /* the collision happened on the last entry, so the normal schedule is now through */
+			}
+		} else if (diag_phase != DIAG_PHASE_NONE)
+		{
+			/* diagnostic schedule executed once: a normal schedule runs before the next diagnostic one */
+			master_frame_table = diag_return_table;
+			master_frame_table_size = diag_return_table_size;
+			master_table_index = 0;
+			diag_phase = DIAG_PHASE_NONE;
 		} else
 		{
 			master_table_index = 0;
+			start_diagnostic_schedule_if_needed();
 		}
 	} else {
 		master_table_index ++;
@@ -246,6 +314,7 @@ void open_lin_master_dl_handler()
 		master_table_index = 0;
 		pending_table = (t_master_frame_table_item *)0;
 		collision_active = l_false; /* Section 2.3.3.2: switching tables before the collision is resolved cancels the resolving */
+		diag_phase = DIAG_PHASE_NONE;
 	}
 
 	master_table_item = get_current_item();

@@ -165,6 +165,28 @@ l_bool open_lin_master_diag_request_debug_drop_cf(open_lin_NAD_t nad, const l_u8
  */
 l_bool open_lin_master_send_go_to_sleep(void);
 
+/** @brief Diagnostic Spec 5.6 Table 5.3: P2max, how long the master keeps polling for the start of a response. */
+#ifndef OPEN_LIN_MASTER_DIAG_P2_MAX_US
+#define OPEN_LIN_MASTER_DIAG_P2_MAX_US 500000u
+#endif
+
+/**
+ * @brief Master side: is there a master request frame (a request's SF/FF/CF, or a
+ *        go-to-sleep frame) still waiting to go out? The master data layer uses
+ *        this to know when to run the diagnostic master request schedule.
+ */
+l_bool open_lin_master_diag_tx_pending(void);
+
+/**
+ * @brief Master side: is a slave response still to be collected - the request is
+ *        fully sent (physical addressing; a functional request gets no response)
+ *        and the response is neither complete nor timed out? Used to decide when
+ *        to run the diagnostic slave response schedule. Gives up once P2max has
+ *        passed without the first response frame arriving; after that, the
+ *        multi-frame reassembly timeout (N_Cr) takes over.
+ */
+l_bool open_lin_master_diag_response_expected(l_u32 now_us);
+
 /** @brief Fill an outgoing 0x3C (master request) frame - hooked from the master data layer. */
 void open_lin_master_transport_layer_handle_tx(open_lin_frame_slot_t *slot);
 

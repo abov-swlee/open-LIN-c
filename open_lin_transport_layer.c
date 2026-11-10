@@ -104,6 +104,11 @@ static l_bool s_master_tp_tx_debug_drop_cf = l_false;
  * open_lin_master_transport_layer_handle_tx() - see the header comment on that function. */
 static l_bool s_master_tp_tx_go_to_sleep_pending = l_false;
 
+/* Section 5.4.2 (Diagnostic Spec): after the last request frame has gone out, the master polls
+ * for the response until it is complete or P2max passes without it starting. */
+static l_bool s_master_tp_response_expected = l_false;
+static l_u32 s_master_tp_response_start_us = 0u;
+
 static l_bool open_lin_id_match(uint16_t val, uint16_t expected, uint16_t wildcard)
 {
 	return (l_bool)((val == wildcard) || (val == expected));
@@ -553,8 +558,25 @@ l_bool open_lin_master_diag_request(open_lin_NAD_t nad, const l_u8 *msg, l_u16 l
 	}
 
 	s_master_tp_request_nad = nad;
+	s_master_tp_response_expected = l_false; /* a new request supersedes whatever was still being waited for */
 	open_lin_tp_tx_start(&s_master_tp_tx_ctx, msg, len);
 	return l_true;
+}
+
+l_bool open_lin_master_diag_tx_pending(void)
+{
+	return ((s_master_tp_tx_ctx.active == l_true) || (s_master_tp_tx_go_to_sleep_pending == l_true)) ? l_true : l_false;
+}
+
+l_bool open_lin_master_diag_response_expected(l_u32 now_us)
+{
+	if ((s_master_tp_response_expected == l_true) &&
+	    (s_master_tp_rx_ctx.active == l_false) &&
+	    ((l_u32)(now_us - s_master_tp_response_start_us) > OPEN_LIN_MASTER_DIAG_P2_MAX_US))
+	{
+		s_master_tp_response_expected = l_false; /* P2max passed without the response starting */
+	}
+	return s_master_tp_response_expected;
 }
 
 l_bool open_lin_master_diag_request_debug_drop_cf(open_lin_NAD_t nad, const l_u8 *msg, l_u16 len)
@@ -581,6 +603,7 @@ l_bool open_lin_master_send_go_to_sleep(void)
 void open_lin_master_transport_layer_handle_tx(open_lin_frame_slot_t *slot)
 {
 	l_bool more;
+	l_bool was_sending;
 	l_u8 i;
 
 	if ((slot == OPEN_LIN_NET_SLOT_EMPTY) || (slot->pid != OPEN_LIN_DIAG_REQUEST))
@@ -600,7 +623,15 @@ void open_lin_master_transport_layer_handle_tx(open_lin_frame_slot_t *slot)
 		return;
 	}
 
+	was_sending = s_master_tp_tx_ctx.active;
 	more = open_lin_tp_tx_next(&s_master_tp_tx_ctx, s_master_tp_request_nad, slot->data_ptr);
+
+	if ((was_sending == l_true) && (more == l_false) && (s_master_tp_request_nad != OPEN_LIN_NAD_FUNCTIONAL))
+	{
+		/* last frame of the request is going out: from here the slave's response is awaited */
+		s_master_tp_response_expected = l_true;
+		s_master_tp_response_start_us = open_lin_hw_get_time_us();
+	}
 
 	if ((s_master_tp_tx_debug_drop_cf == l_true) && (more == l_true))
 	{
@@ -632,6 +663,7 @@ void open_lin_master_transport_layer_handle_rx(open_lin_frame_slot_t *slot)
 
 	if (open_lin_tp_rx_feed(&s_master_tp_rx_ctx, slot->data_ptr, expected_nad, open_lin_hw_get_time_us()) == l_true)
 	{
+		s_master_tp_response_expected = l_false; /* response complete */
 		open_lin_master_diag_response_callback(s_master_tp_rx_ctx.buffer, s_master_tp_rx_ctx.received_len);
 	}
 }

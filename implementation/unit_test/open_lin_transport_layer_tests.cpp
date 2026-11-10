@@ -635,3 +635,83 @@ TEST_CASE("master: sleep_sent callback fires only once the frame is actually tra
 	CHECK(s_master_sleep_sent_called == l_true);
 }
 
+/* ---- Diagnostic schedule triggers (Diagnostic Spec 5.4): tx pending / response expected ---- */
+static void drain_master_request(void)
+{
+	uint8_t frame[8];
+	open_lin_frame_slot_t slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, frame};
+	for (int i = 0; (i < 4) && (open_lin_master_diag_tx_pending() == l_true); i++)
+	{
+		open_lin_master_transport_layer_handle_tx(&slot);
+	}
+}
+
+TEST_CASE("master diag schedule: a physical request is pending, then its response is awaited until complete", "[open_lin_transport_layer][tp][master][sched]") {
+	s_fake_time_us = 10000;
+	uint8_t msg[] = {0xB2, 0x00};
+	REQUIRE(open_lin_master_diag_request(0x05, msg, sizeof(msg)) == l_true);
+	CHECK(open_lin_master_diag_tx_pending() == l_true);
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us) == l_false); /* not until the request is fully sent */
+
+	uint8_t req[8];
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, req};
+	open_lin_master_transport_layer_handle_tx(&req_slot);
+	CHECK(open_lin_master_diag_tx_pending() == l_false);
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us + 1000) == l_true);
+
+	uint8_t resp[8] = {0x05, 0x03, 0xF2, 0x11, 0x22, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, resp};
+	open_lin_master_transport_layer_handle_rx(&resp_slot);
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us + 1000) == l_false); /* complete */
+}
+
+TEST_CASE("master diag schedule: a multi-frame request is pending until its last frame, only then is a response awaited", "[open_lin_transport_layer][tp][master][sched]") {
+	s_fake_time_us = 20000;
+	uint8_t msg[10] = {0xB0, 0xFF, 0x7F, 0xFF, 0xFF, 0x01, 0xAA, 0xBB, 0xCC, 0xDD};
+	REQUIRE(open_lin_master_diag_request(0x05, msg, sizeof(msg)) == l_true);
+
+	uint8_t frame[8];
+	open_lin_frame_slot_t slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, frame};
+	open_lin_master_transport_layer_handle_tx(&slot); /* FF */
+	CHECK(open_lin_master_diag_tx_pending() == l_true);
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us) == l_false);
+	open_lin_master_transport_layer_handle_tx(&slot); /* CF, the last one */
+	CHECK(open_lin_master_diag_tx_pending() == l_false);
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us) == l_true);
+}
+
+TEST_CASE("master diag schedule: no response to a request is awaited past P2max", "[open_lin_transport_layer][tp][master][sched]") {
+	s_fake_time_us = 30000;
+	uint8_t msg[] = {0xB2, 0x00};
+	REQUIRE(open_lin_master_diag_request(0x05, msg, sizeof(msg)) == l_true);
+	drain_master_request();
+
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us + OPEN_LIN_MASTER_DIAG_P2_MAX_US) == l_true);      /* at P2max, not past it */
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us + OPEN_LIN_MASTER_DIAG_P2_MAX_US + 1u) == l_false); /* gave up */
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us) == l_false);                                        /* and stays given up */
+}
+
+TEST_CASE("master diag schedule: a functional request gets no response, so none is awaited", "[open_lin_transport_layer][tp][master][sched]") {
+	s_fake_time_us = 40000;
+	uint8_t msg[] = {0xB2, 0x00};
+	REQUIRE(open_lin_master_diag_request(OPEN_LIN_NAD_FUNCTIONAL, msg, sizeof(msg)) == l_true);
+	CHECK(open_lin_master_diag_tx_pending() == l_true);
+	drain_master_request();
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us) == l_false);
+}
+
+TEST_CASE("master diag schedule: a go-to-sleep frame is pending, and expects no response", "[open_lin_transport_layer][tp][master][sched]") {
+	REQUIRE(open_lin_master_send_go_to_sleep() == l_true);
+	CHECK(open_lin_master_diag_tx_pending() == l_true);
+	drain_master_request();
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us) == l_false);
+}
+
+TEST_CASE("master diag schedule: an idle 0x3C slot does not start a response wait", "[open_lin_transport_layer][tp][master][sched]") {
+	uint8_t frame[8];
+	open_lin_frame_slot_t slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, frame};
+	open_lin_master_transport_layer_handle_tx(&slot); /* nothing queued: legacy tables send this every cycle */
+	CHECK(open_lin_master_diag_tx_pending() == l_false);
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us) == l_false);
+}
+
