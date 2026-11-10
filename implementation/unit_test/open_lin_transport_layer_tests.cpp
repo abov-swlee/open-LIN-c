@@ -1,4 +1,4 @@
-/*
+﻿/*
  * open_lin_transport_layer_tests.cpp
  *
  *  Created on: 21 cze 2018
@@ -811,11 +811,12 @@ TEST_CASE("slave debug pending: NRC 0x78 goes out first, the real response only 
 	CHECK(resp[3] == 0xB0);
 	CHECK(resp[4] == 0x78);
 
-	open_lin_transport_layer_poll(s_fake_time_us + 299999);   /* too early */
+	open_lin_transport_layer_poll(s_fake_time_us + 299999);   /* too early (poll only, the clock stays) */
 	open_lin_transport_layer_handle_tx(&resp_slot);
 	CHECK(resp[0] == 0xFF); /* idle */
 
-	open_lin_transport_layer_poll(s_fake_time_us + 300000);
+	s_fake_time_us += 300000; /* the clock moves on with the poll, as on the board */
+	open_lin_transport_layer_poll(s_fake_time_us);
 	open_lin_transport_layer_handle_tx(&resp_slot);
 	CHECK(resp[0] == 0x01);
 	CHECK(resp[2] == 0xF0); /* the real positive response */
@@ -833,4 +834,76 @@ TEST_CASE("slave debug pending: one shot, the next response is immediate again",
 	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
 	open_lin_transport_layer_handle_tx(&resp_slot);
 	CHECK(resp[2] == 0xF0);
+}
+
+/* ---- slave: a response that is ready later than P2max after its request is discarded ---- */
+static int s_last_error_seen;
+static void send_assign_nad_request(l_u32 at_us)
+{
+	open_lin_NAD = 0x01;
+	open_lin_supplier_id = 0x1234;
+	open_lin_function_id = 0x5678;
+	s_fake_time_us = at_us;
+	uint8_t req[8] = {0x01, 0x06, 0xB0, 0x34, 0x12, 0x78, 0x56, 0x01}; /* Assign NAD, new NAD = 0x01 */
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+}
+
+TEST_CASE("slave P2max: a response polled within P2max is sent", "[open_lin_transport_layer][tp][p2max]") {
+	send_assign_nad_request(5000000);
+	s_fake_time_us += OPEN_LIN_MASTER_DIAG_P2_MAX_US; /* at P2max, not past it */
+	s_last_error = OPEN_LIN_NO_ERROR;
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[2] == 0xF0);
+	CHECK(s_last_error == OPEN_LIN_NO_ERROR);
+}
+
+TEST_CASE("slave P2max: a response polled after P2max is discarded and reported, the slot goes out idle", "[open_lin_transport_layer][tp][p2max]") {
+	send_assign_nad_request(6000000);
+	s_fake_time_us += OPEN_LIN_MASTER_DIAG_P2_MAX_US + 1u;
+	s_last_error = OPEN_LIN_NO_ERROR;
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[0] == 0xFF);
+	CHECK(s_last_error == OPEN_LIN_SLAVE_ERROR_RESPONSE_DISCARDED);
+
+	/* and it is gone for good: not sent by a later poll either */
+	s_fake_time_us -= OPEN_LIN_MASTER_DIAG_P2_MAX_US;
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[0] == 0xFF);
+}
+
+TEST_CASE("slave P2max: after a response pending the real response gets P2* from when it was ready", "[open_lin_transport_layer][tp][p2max]") {
+	open_lin_transport_layer_debug_response_pending(800000); /* longer than P2max, shorter than P2* */
+	send_assign_nad_request(7000000);
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[4] == 0x78); /* the pending went out within P2max */
+
+	s_fake_time_us += 800000;
+	open_lin_transport_layer_poll(s_fake_time_us); /* real response ready now */
+	s_fake_time_us += OPEN_LIN_MASTER_DIAG_P2_STAR_US; /* polled at P2*, not past it */
+	s_last_error = OPEN_LIN_NO_ERROR;
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[2] == 0xF0);
+	CHECK(s_last_error == OPEN_LIN_NO_ERROR);
+}
+
+TEST_CASE("slave P2max: a real response that waits past P2* after a response pending is discarded", "[open_lin_transport_layer][tp][p2max]") {
+	open_lin_transport_layer_debug_response_pending(100000);
+	send_assign_nad_request(8000000);
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot); /* pending */
+	s_fake_time_us += 100000;
+	open_lin_transport_layer_poll(s_fake_time_us);
+	s_fake_time_us += OPEN_LIN_MASTER_DIAG_P2_STAR_US + 1u;
+	s_last_error = OPEN_LIN_NO_ERROR;
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[0] == 0xFF);
+	CHECK(s_last_error == OPEN_LIN_SLAVE_ERROR_RESPONSE_DISCARDED);
 }

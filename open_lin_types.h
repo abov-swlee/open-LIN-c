@@ -71,7 +71,8 @@ typedef enum {
 	OPEN_LIN_MASTER_ERROR_TP_RX_TIMEOUT, /**< N_Cr: response FF+CF reassembly stalled, Table 3.2 */
 	OPEN_LIN_MASTER_ERROR_EVENT_COLLISION, /**< event-triggered frame: garbled or incomplete response, collision resolving started (Section 2.3.3.2) */
 	OPEN_LIN_MASTER_ERROR_EVENT_UNKNOWN_PID, /**< event-triggered frame: valid checksum but the PID in data byte 0 matches no associated frame */
-	OPEN_LIN_MASTER_ERROR_EVENT_CONFIG /**< schedule table rejected: an event-triggered frame's candidates break the Section 2.3.3.2 rules */
+	OPEN_LIN_MASTER_ERROR_EVENT_CONFIG, /**< schedule table rejected: an event-triggered frame's candidates break the Section 2.3.3.2 rules */
+	OPEN_LIN_SLAVE_ERROR_RESPONSE_DISCARDED /**< diagnostic response not sent: it was ready later than P2max (P2* after a response pending) after the request */
 } t_open_lin_error;
 
 /**

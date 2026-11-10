@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @file open_lin_transport_layer.c
  * @brief LIN transport layer implementation
  */
@@ -86,6 +86,11 @@ static l_u8 s_tp_response_buf[OPEN_LIN_TP_MAX_MSG_LEN];
  * open_lin_NAD as a side effect of handling the request, but Table 4.8 requires the
  * response to echo the *initial* (request) NAD, not the new one. */
 static open_lin_NAD_t s_tp_response_nad;
+
+/* Diagnostic Spec 5.6: the response has to start within P2max of the request (P2* after a response pending),
+ * else the master has given up on it and a late response is discarded instead of sent. */
+static l_u32 s_tp_response_ready_us = 0u;
+static l_u32 s_tp_response_window_us = OPEN_LIN_MASTER_DIAG_P2_MAX_US;
 
 /* master side: separate engine state, since a master originates requests on 0x3C
  * and reassembles responses on 0x3D - the mirror image of the slave role above.
@@ -321,6 +326,9 @@ static void open_lin_transport_layer_dispatch(const l_u8 *msg, l_u16 len, open_l
 		return; /* different NAD, not addressed to this node */
 	}
 
+	s_tp_response_ready_us = open_lin_hw_get_time_us(); /* the request is complete: P2max starts here */
+	s_tp_response_window_us = OPEN_LIN_MASTER_DIAG_P2_MAX_US;
+
 	for (i = 0; i < (sizeof(open_lin_sid_handlers)/sizeof(open_lin_sid_handlers[0])); i++)
 	{
 		if (open_lin_sid_handlers[i].sid == msg[0])
@@ -540,6 +548,8 @@ void open_lin_transport_layer_poll(l_u32 now_us)
 		(void)open_lin_memcpy(s_tp_response_buf, s_debug_final_buf, s_debug_final_len);
 		open_lin_tp_tx_start(&s_tp_tx_ctx, s_tp_response_buf, s_debug_final_len);
 		s_debug_final_len = 0u;
+		s_tp_response_ready_us = now_us; /* after a response pending the master allows P2* for the real one */
+		s_tp_response_window_us = OPEN_LIN_MASTER_DIAG_P2_STAR_US;
 	}
 
 	if (open_lin_tp_rx_timed_out(&s_tp_rx_ctx, now_us) == l_true)
@@ -584,6 +594,15 @@ void open_lin_transport_layer_handle_tx(open_lin_frame_slot_t *slot)
 	{
 		/* diagnostic response slot not registered by the app, or wrong slot - nothing to do */
 		return;
+	}
+
+	if ((s_tp_tx_ctx.active == l_true) && (s_tp_tx_ctx.sent_len == 0u) &&
+	    ((l_u32)(open_lin_hw_get_time_us() - s_tp_response_ready_us) > s_tp_response_window_us))
+	{
+		/* Diagnostic Spec 5.6: too late, the master has stopped waiting for this response - drop it
+		 * (this slot goes out idle) rather than have it show up as the answer to a later request. */
+		s_tp_tx_ctx.active = l_false;
+		open_lin_error_handler(OPEN_LIN_SLAVE_ERROR_RESPONSE_DISCARDED);
 	}
 
 	(void)open_lin_tp_tx_next(&s_tp_tx_ctx, s_tp_response_nad, slot->data_ptr);
