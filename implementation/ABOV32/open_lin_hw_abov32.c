@@ -46,9 +46,10 @@
 
 static volatile uint32_t s_un32TimeHigh;
 
-bool s_bBreakDetect;
-static bool s_bRxDone;
-static bool s_bTxDone;
+/* set from the UART IRQ and polled by the main loop: must be volatile, or -O2/-O3 may hoist the read out of the wait loops */
+volatile bool s_bBreakDetect;
+static volatile bool s_bRxDone;
+static volatile bool s_bTxDone;
 
 static void PRV_LinTimer_IRQHandler(uint32_t un32Event, void *pContext)
 {
