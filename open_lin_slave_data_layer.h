@@ -66,6 +66,11 @@ void open_lin_slave_dl_set_response_error_frame(open_lin_pid_t pid, l_u8 byte_in
  */
 l_bool open_lin_slave_dl_get_response_error(void);
 
+/** @brief How many event-triggered frames (associated frames) one node can take part in. */
+#ifndef OPEN_LIN_SLAVE_MAX_EVENT_FRAMES
+#define OPEN_LIN_SLAVE_MAX_EVENT_FRAMES 4u
+#endif
+
 /**
  * @brief Section 2.3.3.2: declare that this node publishes one of the unconditional
  *        frames associated with an event-triggered frame. When a header with
@@ -76,18 +81,27 @@ l_bool open_lin_slave_dl_get_response_error(void);
  *        considers the signal no longer updated. With no update the slot is
  *        left silent. Event-triggered responses never set response_error
  *        (Section 2.7.2).
+ *        Call once per associated frame, so a node can take part in several
+ *        event-triggered frames. Registering an associated frame again replaces
+ *        its earlier entry. Per the spec only one of this node's frames belongs
+ *        under one event_pid (candidates have different publishers).
  * @param[in] event_pid       The (unparitied) id of the event-triggered frame.
  * @param[in] associated_pid  The id of this node's own TX frame (must be in the
  *                            slot array); its data byte 0 must be reserved.
+ * @return l_false if OPEN_LIN_SLAVE_MAX_EVENT_FRAMES entries are already used.
  */
-void open_lin_slave_dl_set_event_frame(open_lin_pid_t event_pid, open_lin_pid_t associated_pid);
+l_bool open_lin_slave_dl_set_event_frame(open_lin_pid_t event_pid, open_lin_pid_t associated_pid);
+
+/** @brief Forget every event-triggered frame registered with open_lin_slave_dl_set_event_frame(), e.g. before a new configuration. */
+void open_lin_slave_dl_clear_event_frames(void);
 
 /**
  * @brief A signal carried in the associated frame was updated, so the next
- *        event-triggered header gets a response. Also cleared when the
- *        associated frame is sent as an ordinary unconditional frame.
+ *        header of its event-triggered frame gets a response. Also cleared when
+ *        the associated frame is sent as an ordinary unconditional frame.
+ * @param[in] associated_pid  The id passed to open_lin_slave_dl_set_event_frame().
  */
-void open_lin_slave_dl_event_updated(void);
+void open_lin_slave_dl_event_updated(open_lin_pid_t associated_pid);
 
 /**
  * @brief Debug/test only: corrupt the checksum of the next event-triggered

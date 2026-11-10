@@ -334,6 +334,7 @@ static void send_header(l_u8 id)
 static void event_test_setup(void)
 {
 	open_lin_net_init(slot_array, length_of_slot_array);
+	open_lin_slave_dl_clear_event_frames();
 	open_lin_slave_dl_set_event_frame(0x06, 0x05);
 	dataBuffer5[1] = 0x7E;
 	g_tx_log.clear();
@@ -351,7 +352,7 @@ TEST_CASE("event-triggered header with no update stays silent", "[open_lin_slave
 TEST_CASE("event-triggered header after an update: protected id in byte 0, checksum over the event id, then silent", "[open_lin_slave][event]")
 {
 	event_test_setup();
-	open_lin_slave_dl_event_updated();
+	open_lin_slave_dl_event_updated(0x05);
 	send_header(0x06);
 
 	l_u8 expected[2] = {open_lin_data_layer_parity(0x05), 0x7E};
@@ -371,7 +372,7 @@ TEST_CASE("event-triggered header after an update: protected id in byte 0, check
 TEST_CASE("garbled event-triggered response leaves the update pending", "[open_lin_slave][event]")
 {
 	event_test_setup();
-	open_lin_slave_dl_event_updated();
+	open_lin_slave_dl_event_updated(0x05);
 	open_lin_slave_dl_debug_event_garble();
 	send_header(0x06);
 
@@ -390,7 +391,7 @@ TEST_CASE("garbled event-triggered response leaves the update pending", "[open_l
 TEST_CASE("sending the associated frame as an ordinary frame clears the pending update", "[open_lin_slave][event]")
 {
 	event_test_setup();
-	open_lin_slave_dl_event_updated();
+	open_lin_slave_dl_event_updated(0x05);
 	send_header(0x05); /* polled directly, e.g. by the collision resolving table */
 	REQUIRE(g_tx_log.size() == 3);
 
@@ -400,6 +401,57 @@ TEST_CASE("sending the associated frame as an ordinary frame clears the pending 
 	tx_invalid = false;
 }
 
+TEST_CASE("a node can take part in several event-triggered frames, each answered on its own header", "[open_lin_slave][event]")
+{
+	event_test_setup();
+	REQUIRE(open_lin_slave_dl_set_event_frame(0x07, 0x01) == l_true); /* second event frame, associated TX frame 0x01 (8 bytes) */
+	dataBuffer2[1] = 0x33;
+	open_lin_slave_dl_event_updated(0x01);
+
+	send_header(0x06); /* the 0x06 frame (0x05) was not updated */
+	CHECK(g_tx_log.empty());
+
+	send_header(0x07);
+	REQUIRE(g_tx_log.size() == 9);
+	l_u8 data[8] = {open_lin_data_layer_parity(0x01), 0x33, 2, 3, 4, 5, 6, 7};
+	CHECK(g_tx_log[0] == data[0]);
+	CHECK(g_tx_log[1] == 0x33);
+	CHECK(g_tx_log[8] == open_lin_data_layer_checksum(0x07, OPEN_LIN_CHECKSUM_ENHANCED, 8, data));
+
+	g_tx_log.clear();
+	open_lin_slave_dl_event_updated(0x05);
+	send_header(0x06); /* now the other one answers, the first stays done */
+	CHECK(g_tx_log.size() == 3);
+	g_tx_log.clear();
+	send_header(0x07);
+	CHECK(g_tx_log.empty());
+	tx_invalid = false;
+	dataBuffer2[0] = 0;
+	dataBuffer2[1] = 1;
+}
+
+TEST_CASE("event frame registry: re-registering replaces, a full table refuses, clear empties it", "[open_lin_slave][event]")
+{
+	event_test_setup();
+	CHECK(open_lin_slave_dl_set_event_frame(0x0A, 0x05) == l_true); /* same associated frame: replaces, still one entry */
+	open_lin_slave_dl_event_updated(0x05);
+	send_header(0x06);
+	CHECK(g_tx_log.empty()); /* no longer under 0x06 */
+	send_header(0x0A);
+	CHECK(g_tx_log.size() == 3);
+	tx_invalid = false;
+
+	open_lin_slave_dl_clear_event_frames();
+	for (l_u8 i = 0u; i < OPEN_LIN_SLAVE_MAX_EVENT_FRAMES; i++)
+	{
+		CHECK(open_lin_slave_dl_set_event_frame(0x10, (open_lin_pid_t)(0x20 + i)) == l_true);
+	}
+	CHECK(open_lin_slave_dl_set_event_frame(0x10, 0x30) == l_false);
+
+	open_lin_slave_dl_clear_event_frames();
+	open_lin_slave_dl_event_updated(0x05); /* unknown associated frame: nothing happens */
+	CHECK(open_lin_slave_dl_set_event_frame(0x06, 0x05) == l_true);
+}
 #ifdef OPEN_LIN_DYNAMIC_IDS
 	open_lin_id_translation_item_t open_lin_id_translation_tab[] = {
 			{0x12,0x12},
