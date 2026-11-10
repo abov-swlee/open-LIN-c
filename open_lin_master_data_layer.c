@@ -71,10 +71,65 @@ static void open_lin_master_goto_idle(l_bool next_item)
 }
 
 
+/* Section 2.3.3.2 rules for one event-triggered table entry */
+static l_bool event_trigger_is_valid(const t_master_frame_table_item *item)
+{
+	const open_lin_event_trigger_t *event = item->event_trigger;
+	l_u8 i;
+	l_u8 j;
+
+	if ((event->candidates == (const open_lin_frame_slot_t **)0) || (event->candidate_count == 0u) ||
+	    (event->collision_table == (t_master_frame_table_item *)0) || (event->collision_table_size == 0u))
+	{
+		return l_false;
+	}
+
+	for (i = 0u; i < event->candidate_count; i++)
+	{
+		const open_lin_frame_slot_t *candidate = event->candidates[i];
+		l_bool in_collision_table = l_false;
+
+		if ((candidate == (const open_lin_frame_slot_t *)0) || (candidate->data_length == 0u) ||
+		    (candidate->data_length != item->slot.data_length) ||                  /* equal length, which is also the response length */
+		    (candidate->checksum_type != event->candidates[0]->checksum_type))     /* same checksum model */
+		{
+			return l_false;
+		}
+		for (j = 0u; j < event->collision_table_size; j++)
+		{
+			if (event->collision_table[j].slot.pid == candidate->pid)
+			{
+				in_collision_table = l_true;
+			}
+		}
+		if (in_collision_table == l_false) /* collision resolving has to be able to poll every candidate */
+		{
+			return l_false;
+		}
+	}
+	return l_true;
+}
+
+l_bool open_lin_master_dl_validate_table(const t_master_frame_table_item *p_table, l_u8 p_size)
+{
+	l_u8 i;
+
+	for (i = 0u; i < p_size; i++)
+	{
+		if ((p_table[i].event_trigger != (const open_lin_event_trigger_t *)0) && (event_trigger_is_valid(&p_table[i]) == l_false))
+		{
+			open_lin_error_handler(OPEN_LIN_MASTER_ERROR_EVENT_CONFIG);
+			return l_false;
+		}
+	}
+	return l_true;
+}
+
 void open_lin_master_dl_init(t_master_frame_table_item *p_master_frame_table, l_u8 p_master_frame_table_size)
 {
 	master_frame_table = p_master_frame_table;
-	master_frame_table_size = p_master_frame_table_size;
+	/* a table that breaks the event-triggered frame rules is not run at all, the master stays silent */
+	master_frame_table_size = (open_lin_master_dl_validate_table(p_master_frame_table, p_master_frame_table_size) == l_true) ? p_master_frame_table_size : 0u;
 	pending_table = (t_master_frame_table_item *)0;
 	collision_active = l_false;
 	diag_phase = DIAG_PHASE_NONE;
@@ -93,7 +148,7 @@ void open_lin_master_dl_set_diagnostic_tables(t_master_frame_table_item *p_mrf_t
 
 l_bool open_lin_master_dl_switch_schedule_table(t_master_frame_table_item *p_table, l_u8 p_size)
 {
-	if ((p_table == (t_master_frame_table_item *)0) || (p_size == 0u))
+	if ((p_table == (t_master_frame_table_item *)0) || (p_size == 0u) || (open_lin_master_dl_validate_table(p_table, p_size) == l_false))
 	{
 		return l_false;
 	}

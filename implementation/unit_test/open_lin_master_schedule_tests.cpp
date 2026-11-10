@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Schedule-table switching tests for the master data layer.
  * Self-contained: provides its own HW stubs, so it links against only
  * open_lin_master_data_layer.c and open_lin_data_layer.c.
@@ -186,8 +186,8 @@ static const open_lin_frame_slot_t cand2 = {0x02, OPEN_LIN_FRAME_TYPE_RECEIVE, 2
 static const open_lin_frame_slot_t *cands[] = {&cand1, &cand2};
 static l_u8 buf_poll[1] = {0};
 static t_master_frame_table_item collision_table[] = {
-	{100000, {0x30, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_poll}, NULL},
-	{100000, {0x31, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_poll}, NULL},
+	{100000, {0x04, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_poll}, NULL},
+	{100000, {0x02, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_poll}, NULL},
 };
 static const open_lin_event_trigger_t event_trigger = {cands, 2, collision_table, TABLE_SIZE(collision_table)};
 static t_master_frame_table_item table_ev[] = {
@@ -265,10 +265,10 @@ TEST_CASE("event-triggered collision runs the collision table once, then resumes
 	CHECK(s_errors[0] == OPEN_LIN_MASTER_ERROR_EVENT_COLLISION);
 	CHECK(s_rx_count == 0);
 
-	run(5);                                                /* 0x30, 0x31, resume: 0x02, 0x01, 0x06 */
+	run(5);                                                /* 0x04, 0x02, resume: 0x02, 0x01, 0x06 */
 	REQUIRE(s_frames.size() == 7);
-	CHECK(sent_pid(2) == open_lin_data_layer_parity(0x30));
-	CHECK(sent_pid(3) == open_lin_data_layer_parity(0x31));
+	CHECK(sent_pid(2) == open_lin_data_layer_parity(0x04));
+	CHECK(sent_pid(3) == open_lin_data_layer_parity(0x02));
 	CHECK(sent_pid(4) == open_lin_data_layer_parity(0x02)); /* the entry after the event frame, not 0x01 again */
 	CHECK(sent_pid(5) == open_lin_data_layer_parity(0x01));
 	CHECK(sent_pid(6) == open_lin_data_layer_parity(0x06));
@@ -280,10 +280,10 @@ TEST_CASE("collision on the last entry resumes at the first entry", "[open_lin_m
 	open_lin_master_dl_init(table_ev_last, TABLE_SIZE(table_ev_last));
 	run(1);
 	feed_event_response(0xAA, 0xBB, false);
-	run(4);                                                /* 0x06 collision, 0x30, 0x31, back to 0x01 */
+	run(4);                                                /* 0x06 collision, 0x04, 0x02, back to 0x01 */
 	REQUIRE(s_frames.size() == 5);
-	CHECK(sent_pid(2) == open_lin_data_layer_parity(0x30));
-	CHECK(sent_pid(3) == open_lin_data_layer_parity(0x31));
+	CHECK(sent_pid(2) == open_lin_data_layer_parity(0x04));
+	CHECK(sent_pid(3) == open_lin_data_layer_parity(0x02));
 	CHECK(sent_pid(4) == open_lin_data_layer_parity(0x01));
 }
 
@@ -296,7 +296,7 @@ TEST_CASE("a partial event-triggered response counts as a collision", "[open_lin
 	run(2);
 	REQUIRE(s_errors.size() == 1);
 	CHECK(s_errors[0] == OPEN_LIN_MASTER_ERROR_EVENT_COLLISION);
-	CHECK(sent_pid(2) == open_lin_data_layer_parity(0x30));
+	CHECK(sent_pid(2) == open_lin_data_layer_parity(0x04));
 }
 
 TEST_CASE("event-triggered response with an unknown PID is an error, not a collision", "[open_lin_master_schedule]")
@@ -440,8 +440,8 @@ TEST_CASE("diagnostic schedules: a collision on the last entry still lets a wait
 	run(1);                                    /* 0x01 */
 	feed_event_response(0xAA, 0xBB, false);
 	run(1);                                    /* 0x06 collides - and being the last entry, the normal run ends here */
-	run(3);                                    /* 0x30, 0x31, then the MRF instead of 0x01 */
-	expect_pids({0x01, 0x06, 0x30, 0x31, 0x3C});
+	run(3);                                    /* 0x04, 0x02, then the MRF instead of 0x01 */
+	expect_pids({0x01, 0x06, 0x04, 0x02, 0x3C});
 }
 
 TEST_CASE("switching tables while a collision is being resolved cancels the resolving", "[open_lin_master_schedule]")
@@ -450,11 +450,104 @@ TEST_CASE("switching tables while a collision is being resolved cancels the reso
 	open_lin_master_dl_init(table_ev, TABLE_SIZE(table_ev));
 	run(1);
 	feed_event_response(0xAA, 0xBB, false);
-	run(2);                                                /* 0x06 collision, 0x30 */
+	run(2);                                                /* 0x06 collision, 0x04 */
 	open_lin_master_dl_switch_schedule_table(table_c, TABLE_SIZE(table_c));
 	run(3);                                                /* table_c only: never back to table_ev */
 	REQUIRE(s_frames.size() == 6);
 	CHECK(sent_pid(3) == open_lin_data_layer_parity(0x20));
 	CHECK(sent_pid(4) == open_lin_data_layer_parity(0x20));
 	CHECK(sent_pid(5) == open_lin_data_layer_parity(0x20));
+}
+
+/* ---- Event-triggered frame rules (Section 2.3.3.2) checked when a table is handed over ---- */
+static l_u8 buf_short[1];
+static const open_lin_frame_slot_t cand_short  = {0x03, OPEN_LIN_FRAME_TYPE_RECEIVE, 1, buf_short};
+static const open_lin_frame_slot_t cand_empty  = {0x03, OPEN_LIN_FRAME_TYPE_RECEIVE, 0, buf_short};
+static const open_lin_frame_slot_t cand_classic = {0x02, OPEN_LIN_FRAME_TYPE_RECEIVE, 2, buf_c2, OPEN_LIN_CHECKSUM_CLASSIC};
+static const open_lin_frame_slot_t cand_enhanced = {0x04, OPEN_LIN_FRAME_TYPE_RECEIVE, 2, buf_c1, OPEN_LIN_CHECKSUM_ENHANCED};
+static const open_lin_frame_slot_t cand_not_polled = {0x07, OPEN_LIN_FRAME_TYPE_RECEIVE, 2, buf_c2};
+
+static bool event_table_valid(const open_lin_frame_slot_t **candidates, l_u8 count)
+{
+	open_lin_event_trigger_t trigger = {candidates, count, collision_table, TABLE_SIZE(collision_table)};
+	t_master_frame_table_item table[] = {
+		{100000, {0x06, OPEN_LIN_FRAME_TYPE_RECEIVE, 2, buf_ev}, &trigger},
+	};
+	reset_sim();
+	return open_lin_master_dl_validate_table(table, TABLE_SIZE(table)) == l_true;
+}
+
+TEST_CASE("event-triggered rules: a table that follows them is accepted", "[open_lin_master_schedule]")
+{
+	CHECK(event_table_valid(cands, 2));
+	CHECK(s_errors.empty());
+}
+
+TEST_CASE("event-triggered rules: candidates of different length are rejected", "[open_lin_master_schedule]")
+{
+	const open_lin_frame_slot_t *mixed[] = {&cand1, &cand_short};
+	CHECK_FALSE(event_table_valid(mixed, 2));
+	REQUIRE(s_errors.size() == 1);
+	CHECK(s_errors[0] == OPEN_LIN_MASTER_ERROR_EVENT_CONFIG);
+}
+
+TEST_CASE("event-triggered rules: candidates of a different length than the event response are rejected", "[open_lin_master_schedule]")
+{
+	const open_lin_frame_slot_t *shorter[] = {&cand_short};
+	CHECK_FALSE(event_table_valid(shorter, 1));
+}
+
+TEST_CASE("event-triggered rules: a candidate without data byte 0 is rejected", "[open_lin_master_schedule]")
+{
+	const open_lin_frame_slot_t *empty[] = {&cand_empty};
+	CHECK_FALSE(event_table_valid(empty, 1));
+}
+
+TEST_CASE("event-triggered rules: mixed checksum models are rejected", "[open_lin_master_schedule]")
+{
+	const open_lin_frame_slot_t *mixed[] = {&cand_enhanced, &cand_classic};
+	CHECK_FALSE(event_table_valid(mixed, 2));
+}
+
+TEST_CASE("event-triggered rules: no candidates or a NULL list are rejected", "[open_lin_master_schedule]")
+{
+	CHECK_FALSE(event_table_valid(cands, 0));
+	CHECK_FALSE(event_table_valid(NULL, 2));
+}
+
+TEST_CASE("event-triggered rules: a collision table that doesn't poll every candidate is rejected", "[open_lin_master_schedule]")
+{
+	const open_lin_frame_slot_t *with_unpolled[] = {&cand1, &cand_not_polled};
+	CHECK_FALSE(event_table_valid(with_unpolled, 2));
+}
+
+TEST_CASE("event-triggered rules: init does not run a table that breaks them", "[open_lin_master_schedule]")
+{
+	const open_lin_frame_slot_t *mixed[] = {&cand1, &cand_short};
+	open_lin_event_trigger_t trigger = {mixed, 2, collision_table, TABLE_SIZE(collision_table)};
+	t_master_frame_table_item table[] = {
+		{100000, {0x01, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_a1}, NULL},
+		{100000, {0x06, OPEN_LIN_FRAME_TYPE_RECEIVE,  2, buf_ev}, &trigger},
+	};
+	reset_sim();
+	open_lin_master_dl_init(table, TABLE_SIZE(table));
+	run(3);
+	CHECK(s_frames.empty());
+	REQUIRE(s_errors.size() == 1);
+	CHECK(s_errors[0] == OPEN_LIN_MASTER_ERROR_EVENT_CONFIG);
+}
+
+TEST_CASE("event-triggered rules: switch_schedule_table refuses such a table and keeps the current one", "[open_lin_master_schedule]")
+{
+	const open_lin_frame_slot_t *mixed[] = {&cand1, &cand_short};
+	open_lin_event_trigger_t trigger = {mixed, 2, collision_table, TABLE_SIZE(collision_table)};
+	t_master_frame_table_item bad[] = {
+		{100000, {0x06, OPEN_LIN_FRAME_TYPE_RECEIVE, 2, buf_ev}, &trigger},
+	};
+	reset_sim();
+	open_lin_master_dl_init(table_a, TABLE_SIZE(table_a));
+	CHECK(open_lin_master_dl_switch_schedule_table(bad, TABLE_SIZE(bad)) == l_false);
+	run(1);
+	REQUIRE(s_frames.size() == 1);
+	CHECK(sent_pid(0) == open_lin_data_layer_parity(0x01));
 }

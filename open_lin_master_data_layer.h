@@ -29,6 +29,20 @@ typedef enum {
 	OPEN_LIN_MASTER_TX_DATA,
 } t_open_lin_master_state;
 
+/**
+ * @brief Checks the event-triggered entries of a schedule table against the
+ *        Section 2.3.3.2 rules the master can see: at least one candidate, all
+ *        with the same non-zero length (equal to the entry's response length) and
+ *        the same checksum model, and a collision table that polls each of them.
+ *        Reports OPEN_LIN_MASTER_ERROR_EVENT_CONFIG on the first violation.
+ *        Different publishers can't be checked here, only the node knows its own frames.
+ */
+l_bool open_lin_master_dl_validate_table(const t_master_frame_table_item *p_table, l_u8 p_size);
+
+/**
+ * @brief Starts the master on a schedule table. A table that fails
+ *        open_lin_master_dl_validate_table() is not run: the master stays silent.
+ */
 void open_lin_master_dl_init(t_master_frame_table_item *p_master_frame_table, l_u8 p_master_frame_table_size);
 
 /**
@@ -52,7 +66,8 @@ void open_lin_master_dl_set_diagnostic_tables(t_master_frame_table_item *p_mrf_t
  *        A second request before the switch happens replaces the first.
  * @param[in] p_table  The new table, must stay valid while it is in use.
  * @param[in] p_size   Number of entries in p_table.
- * @return l_true if accepted, l_false (request ignored) for a NULL or empty table.
+ * @return l_true if accepted, l_false (request ignored) for a NULL or empty table or one that
+ *         fails open_lin_master_dl_validate_table().
  */
 l_bool open_lin_master_dl_switch_schedule_table(t_master_frame_table_item *p_table, l_u8 p_size);
 l_bool open_lin_master_dl_rx(l_u8 rx_byte);
