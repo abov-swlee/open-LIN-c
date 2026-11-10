@@ -62,6 +62,14 @@ void open_lin_master_dl_set_state_callback(void (*callback)(t_open_lin_master_st
 l_u32 open_lin_master_dl_get_frame_start_time_us();
 
 /**
+ * @brief Slot time (the table entry's frame_slot_us) of the frame most recently
+ *        started - pairs with open_lin_master_dl_get_frame_start_time_us(), so an
+ *        application can wait out the rest of the slot (frame start + this) before
+ *        the next header goes out, using each entry's own timing (Section 2.4).
+ */
+l_u32 open_lin_master_dl_get_frame_slot_us();
+
+/**
  * @brief Pause/resume the master's own schedule (Section 2.6) - while the
  *        network is asleep, the whole bus must stay silent, so open_lin_master_dl_handler()
  *        no-ops until this is cleared again.

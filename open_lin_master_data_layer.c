@@ -41,6 +41,7 @@ static t_master_frame_table_item *diag_return_table = (t_master_frame_table_item
 static l_u8 diag_return_table_size = 0;
 
 static l_u32 frame_start_time_us = 0;
+static l_u32 frame_slot_us_of_current = 0;
 static l_bool master_network_asleep = l_false;
 
 static void open_lin_master_goto_idle(l_bool next_item);
@@ -329,6 +330,7 @@ void open_lin_master_dl_handler()
 		if (lin_master_state == OPEN_LIN_MASTER_IDLE)
 		{
 			frame_start_time_us = open_lin_hw_get_time_us();
+			frame_slot_us_of_current = master_table_item->frame_slot_us;
 
 			if (open_lin_master_data_tx_header(&master_table_item->slot) == l_true)
 			{
@@ -444,4 +446,9 @@ void open_lin_master_dl_set_state_callback(void (*callback)(t_open_lin_master_st
 l_u32 open_lin_master_dl_get_frame_start_time_us()
 {
 	return frame_start_time_us;
+}
+
+l_u32 open_lin_master_dl_get_frame_slot_us()
+{
+	return frame_slot_us_of_current;
 }

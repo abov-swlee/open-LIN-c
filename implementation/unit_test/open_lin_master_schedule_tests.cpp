@@ -312,6 +312,30 @@ TEST_CASE("event-triggered response with an unknown PID is an error, not a colli
 	CHECK(sent_pid(2) == open_lin_data_layer_parity(0x02));        /* no collision switch */
 }
 
+TEST_CASE("frame slot time follows the table entry of the frame just started", "[open_lin_master_schedule]")
+{
+	static t_master_frame_table_item timed_table[] = {
+		{15000, {0x01, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_a1}, NULL},
+		{10000, {0x02, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_a2}, NULL},
+		{25000, {0x03, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_a2}, NULL},
+	};
+	reset_sim();
+	open_lin_master_dl_init(timed_table, TABLE_SIZE(timed_table));
+	open_lin_master_dl_handler();
+	CHECK(open_lin_master_dl_get_frame_slot_us() == 15000);
+	open_lin_master_dl_handler();
+	CHECK(open_lin_master_dl_get_frame_slot_us() == 10000);
+	open_lin_master_dl_handler();
+	CHECK(open_lin_master_dl_get_frame_slot_us() == 25000);
+	open_lin_master_dl_handler();                          /* wraps */
+	CHECK(open_lin_master_dl_get_frame_slot_us() == 15000);
+
+	/* a table switch brings the new table's own timing */
+	open_lin_master_dl_switch_schedule_table(table_c, TABLE_SIZE(table_c));
+	open_lin_master_dl_handler();
+	CHECK(open_lin_master_dl_get_frame_slot_us() == 100000);
+}
+
 /* ---- Diagnostic schedules (Diagnostic Spec 5.4, Diagnostics Interleaved Mode) ---- */
 static l_u8 buf_diag_req[8], buf_diag_resp[8];
 static t_master_frame_table_item mrf_table[] = {
