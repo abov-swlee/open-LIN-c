@@ -43,6 +43,69 @@ void open_lin_slave_dl_debug_force_response_error(void)
 	s_response_error = l_true;
 }
 
+/* Section 2.3.3.2: event-triggered frame this node can answer */
+static l_bool s_event_configured = l_false;
+static open_lin_pid_t s_event_pid;
+static open_lin_pid_t s_event_associated_pid;
+static l_bool s_event_updated = l_false;
+static l_bool s_event_garble = l_false;
+
+void open_lin_slave_dl_set_event_frame(open_lin_pid_t event_pid, open_lin_pid_t associated_pid)
+{
+	s_event_pid = event_pid;
+	s_event_associated_pid = associated_pid;
+	s_event_updated = l_false;
+	s_event_configured = l_true;
+}
+
+void open_lin_slave_dl_event_updated(void)
+{
+	s_event_updated = l_true;
+}
+
+void open_lin_slave_dl_debug_event_garble(void)
+{
+	s_event_garble = l_true;
+}
+
+/* Answer (or stay silent on) a header carrying the event-triggered frame's id */
+static void open_lin_slave_event_response(open_lin_pid_t event_pid)
+{
+	open_lin_frame_slot_t *slot;
+	l_u8 checksum;
+
+	if (s_event_updated == l_false)
+	{
+		return;
+	}
+	slot = open_lin_net_get_slot(s_event_associated_pid);
+	if ((slot == OPEN_LIN_NET_SLOT_EMPTY) || (slot->frame_type != OPEN_LIN_FRAME_TYPE_TRANSMIT) || (slot->data_length == 0u))
+	{
+		return;
+	}
+
+	open_lin_set_rx_enabled(l_false); /* don't receive our own response */
+	open_lin_net_tx_handler(s_event_associated_pid);
+	slot->data_ptr[0] = open_lin_data_layer_parity(s_event_associated_pid);
+	checksum = open_lin_data_layer_checksum(event_pid, slot->checksum_type, slot->data_length, slot->data_ptr);
+	if (s_event_garble == l_true)
+	{
+		checksum = (l_u8)(checksum ^ 0xFFu);
+	}
+
+	if ((open_lin_hw_tx_data(slot->data_ptr, slot->data_length) == l_false) ||
+	    (open_lin_hw_tx_data(&checksum, (l_u8)sizeof(checksum)) == l_false))
+	{
+		open_lin_error_handler(OPEN_LIN_SLAVE_ERROR_HW_TX); /* not counted in response_error, Section 2.7.2 */
+	} else if (s_event_garble == l_true)
+	{
+		s_event_garble = l_false; /* a collision leaves the update pending */
+	} else
+	{
+		s_event_updated = l_false;
+	}
+}
+
 l_bool open_lin_slave_dl_get_response_error(void)
 {
 	return s_response_error;
@@ -141,6 +204,13 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 					break;
 				}
 
+				if ((s_event_configured == l_true) && (open_lin_data_layer_frame.pid == s_event_pid))
+				{
+					open_lin_slave_event_response(open_lin_data_layer_frame.pid);
+					open_lin_slave_reset();
+					break;
+				}
+
 				if (open_lin_slave_set_lin_frame(&open_lin_data_layer_frame) == true)
 				{
 					if (open_lin_slave_state == OPEN_LIN_SLAVE_DATA_TX)
@@ -178,6 +248,10 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 							if (s_response_error_frame_configured && (open_lin_data_layer_frame.pid == s_response_error_pid))
 							{
 								s_response_error = l_false; /* Section 2.7.3: cleared once reported successfully */
+							}
+							if ((s_event_configured == l_true) && (open_lin_data_layer_frame.pid == s_event_associated_pid))
+							{
+								s_event_updated = l_false; /* Section 2.3.3.2: sent as an ordinary frame, the signal is no longer updated */
 							}
 							open_lin_slave_reset();
 							break;

@@ -1,6 +1,7 @@
 #define CATCH_CONFIG_MAIN  // This tells Catch to provide a main() - only do this in one cpp file
 #include "catch.hpp"
 #include "iostream"
+#include <vector>
 
 extern "C"{
 
@@ -28,13 +29,15 @@ l_u8 dataBuffer1[] = {0,0,0,0};
 l_u8 dataBuffer2[] = {0,1,2,3,4,5,6,7};
 l_u8 dataBuffer3[] = {0,0,0};
 l_u8 dataBuffer4[] = {0};
+l_u8 dataBuffer5[] = {0,0}; /* event-triggered frame's associated TX frame: byte 0 is reserved for its protected id */
 
 open_lin_frame_slot_t slot_array[] =
 {
 		{0x12,OPEN_LIN_FRAME_TYPE_RECEIVE,sizeof(dataBuffer1),dataBuffer1},
 		{0x01,OPEN_LIN_FRAME_TYPE_TRANSMIT,sizeof(dataBuffer2),dataBuffer2},
 		{OPEN_LIN_DIAG_REQUEST,OPEN_LIN_FRAME_TYPE_RECEIVE,sizeof(dataBuffer3),dataBuffer3},
-		{0x08,OPEN_LIN_FRAME_TYPE_RECEIVE,sizeof(dataBuffer4),dataBuffer4,OPEN_LIN_CHECKSUM_CLASSIC}
+		{0x08,OPEN_LIN_FRAME_TYPE_RECEIVE,sizeof(dataBuffer4),dataBuffer4,OPEN_LIN_CHECKSUM_CLASSIC},
+		{0x05,OPEN_LIN_FRAME_TYPE_TRANSMIT,sizeof(dataBuffer5),dataBuffer5}
 };
 
 
@@ -137,7 +140,10 @@ l_bool tx_done = true;
 
 extern l_u8 dataBuffer2[8];
 
+static std::vector<l_u8> g_tx_log; /* everything the stub was asked to transmit, for the event-triggered tests */
+
 l_u8 open_lin_hw_tx_data(l_u8* data, l_u8 len){ /* return type must match open_lin_hw.h's declaration */
+	g_tx_log.insert(g_tx_log.end(), data, data + len);
 	if (sizeof(dataBuffer2) == len)
 	{
 		if (memcmp(data,dataBuffer2,len) != 0)
@@ -312,6 +318,85 @@ TEST_CASE("response_error: set on invalid checksum of an owned RX frame", "[open
 	open_lin_slave_rx_header(0);
 	open_lin_slave_rx_header(0x55);
 	open_lin_slave_rx_header(0xC1);
+	tx_invalid = false;
+}
+
+/* ---- Event-triggered frame, slave side (Section 2.3.3.2): event id 0x06, associated TX frame 0x05 ---- */
+static void send_header(l_u8 id)
+{
+	open_lin_slave_reset();
+	sim_break = true;
+	open_lin_slave_rx_header(0);
+	open_lin_slave_rx_header(0x55);
+	open_lin_slave_rx_header(open_lin_data_layer_parity(id));
+}
+
+static void event_test_setup(void)
+{
+	open_lin_net_init(slot_array, length_of_slot_array);
+	open_lin_slave_dl_set_event_frame(0x06, 0x05);
+	dataBuffer5[1] = 0x7E;
+	g_tx_log.clear();
+	get_and_clear_sim_error();
+}
+
+TEST_CASE("event-triggered header with no update stays silent", "[open_lin_slave][event]")
+{
+	event_test_setup();
+	send_header(0x06);
+	CHECK(g_tx_log.empty());
+	CHECK(get_and_clear_sim_error() == OPEN_LIN_NO_ERROR);
+}
+
+TEST_CASE("event-triggered header after an update: protected id in byte 0, checksum over the event id, then silent", "[open_lin_slave][event]")
+{
+	event_test_setup();
+	open_lin_slave_dl_event_updated();
+	send_header(0x06);
+
+	l_u8 expected[2] = {open_lin_data_layer_parity(0x05), 0x7E};
+	l_u8 cs = open_lin_data_layer_checksum(0x06, OPEN_LIN_CHECKSUM_ENHANCED, 2, expected);
+	REQUIRE(g_tx_log.size() == 3);
+	CHECK(g_tx_log[0] == expected[0]);
+	CHECK(g_tx_log[1] == expected[1]);
+	CHECK(g_tx_log[2] == cs);
+	CHECK(get_and_clear_sim_error() == OPEN_LIN_NO_ERROR);
+
+	g_tx_log.clear();
+	send_header(0x06); /* the signal is no longer updated */
+	CHECK(g_tx_log.empty());
+	tx_invalid = false;
+}
+
+TEST_CASE("garbled event-triggered response leaves the update pending", "[open_lin_slave][event]")
+{
+	event_test_setup();
+	open_lin_slave_dl_event_updated();
+	open_lin_slave_dl_debug_event_garble();
+	send_header(0x06);
+
+	l_u8 data[2] = {open_lin_data_layer_parity(0x05), 0x7E};
+	l_u8 cs = open_lin_data_layer_checksum(0x06, OPEN_LIN_CHECKSUM_ENHANCED, 2, data);
+	REQUIRE(g_tx_log.size() == 3);
+	CHECK(g_tx_log[2] == (l_u8)(cs ^ 0xFF));
+
+	g_tx_log.clear();
+	send_header(0x06); /* still pending: answers again, now with a good checksum */
+	REQUIRE(g_tx_log.size() == 3);
+	CHECK(g_tx_log[2] == cs);
+	tx_invalid = false;
+}
+
+TEST_CASE("sending the associated frame as an ordinary frame clears the pending update", "[open_lin_slave][event]")
+{
+	event_test_setup();
+	open_lin_slave_dl_event_updated();
+	send_header(0x05); /* polled directly, e.g. by the collision resolving table */
+	REQUIRE(g_tx_log.size() == 3);
+
+	g_tx_log.clear();
+	send_header(0x06);
+	CHECK(g_tx_log.empty());
 	tx_invalid = false;
 }
 

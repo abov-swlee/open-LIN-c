@@ -67,6 +67,37 @@ void open_lin_slave_dl_set_response_error_frame(open_lin_pid_t pid, l_u8 byte_in
 l_bool open_lin_slave_dl_get_response_error(void);
 
 /**
+ * @brief Section 2.3.3.2: declare that this node publishes one of the unconditional
+ *        frames associated with an event-triggered frame. When a header with
+ *        event_pid arrives and the application has flagged an update with
+ *        open_lin_slave_dl_event_updated(), the library answers with the
+ *        associated frame's data - its data byte 0 replaced by that frame's
+ *        protected id, the checksum computed over event_pid - and then
+ *        considers the signal no longer updated. With no update the slot is
+ *        left silent. Event-triggered responses never set response_error
+ *        (Section 2.7.2).
+ * @param[in] event_pid       The (unparitied) id of the event-triggered frame.
+ * @param[in] associated_pid  The id of this node's own TX frame (must be in the
+ *                            slot array); its data byte 0 must be reserved.
+ */
+void open_lin_slave_dl_set_event_frame(open_lin_pid_t event_pid, open_lin_pid_t associated_pid);
+
+/**
+ * @brief A signal carried in the associated frame was updated, so the next
+ *        event-triggered header gets a response. Also cleared when the
+ *        associated frame is sent as an ordinary unconditional frame.
+ */
+void open_lin_slave_dl_event_updated(void);
+
+/**
+ * @brief Debug/test only: corrupt the checksum of the next event-triggered
+ *        response, which is what the master sees when two slaves answer at
+ *        once - lets collision handling be tried with a single slave board.
+ *        The update stays pending, as it would for a real collision.
+ */
+void open_lin_slave_dl_debug_event_garble(void);
+
+/**
  * @brief Debug/test only: force response_error true without a real protocol
  *        error, so its appearance in the designated frame (and automatic
  *        clearing once that frame is next sent) can be observed on real
