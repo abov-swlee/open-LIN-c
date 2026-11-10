@@ -10,9 +10,17 @@
 
 #include "open_lin_types.h"
 #include "open_lin_network_layer.h"
-typedef struct {
+#include "open_lin_event_trigger.h"
+typedef struct open_lin_master_frame_table_item_s {
 	uint32_t frame_slot_us;
 	open_lin_frame_slot_t slot;
+	/**
+	 * @brief NULL for a plain unconditional frame entry (existing behavior,
+	 *        unchanged). Non-NULL marks this entry as event-triggered: `slot`
+	 *        still carries the event-triggered frame's own PID (for the
+	 *        header) and `event_trigger` lists its candidate responders.
+	 */
+	const open_lin_event_trigger_t *event_trigger;
 } t_master_frame_table_item;
 
 typedef enum {
@@ -22,6 +30,17 @@ typedef enum {
 } t_open_lin_master_state;
 
 void open_lin_master_dl_init(t_master_frame_table_item *p_master_frame_table, l_u8 p_master_frame_table_size);
+
+/**
+ * @brief Request a switch to another schedule table (LDF Schedule_tables).
+ *        The switch happens between frames: a frame slot already in progress
+ *        finishes first, then the new table starts at its first entry.
+ *        A second request before the switch happens replaces the first.
+ * @param[in] p_table  The new table, must stay valid while it is in use.
+ * @param[in] p_size   Number of entries in p_table.
+ * @return l_true if accepted, l_false (request ignored) for a NULL or empty table.
+ */
+l_bool open_lin_master_dl_switch_schedule_table(t_master_frame_table_item *p_table, l_u8 p_size);
 l_bool open_lin_master_dl_rx(l_u8 rx_byte);
 void open_lin_master_dl_handler();
 void open_lin_master_dl_rx_callback(open_lin_frame_slot_t* slot);

@@ -1,0 +1,309 @@
+/*
+ * Schedule-table switching tests for the master data layer.
+ * Self-contained: provides its own HW stubs, so it links against only
+ * open_lin_master_data_layer.c and open_lin_data_layer.c.
+ */
+#include "catch.hpp"
+#include <vector>
+
+extern "C"{
+
+#include "../open_lin_cfg.h"
+#include "../../open_lin_data_layer.h"
+#include "../../open_lin_hw.h"
+#include "../../open_lin_network_layer.h"
+#include "../../open_lin_master_data_layer.h"
+#include "../../open_lin_transport_layer.h"
+
+/* ---- HW / callback stubs ---- */
+static std::vector<std::vector<uint8_t> > s_frames; /* one entry per break */
+static std::vector<uint8_t> s_rx_feed;
+static size_t s_rx_pos = 0;
+static void (*s_on_rx_callback)(open_lin_frame_slot_t *) = 0;
+
+void open_lin_set_rx_enabled(l_bool status) { (void)status; }
+static std::vector<t_open_lin_error> s_errors;
+static l_u32 s_time_us = 0;
+void open_lin_error_handler(t_open_lin_error error_code) { s_errors.push_back(error_code); }
+l_u32 open_lin_hw_get_time_us() { s_time_us += 1000u; return s_time_us; } /* advances so RX timeouts can elapse */
+l_bool open_lin_hw_tx_break(void) { s_frames.push_back(std::vector<uint8_t>()); return l_true; }
+l_bool open_lin_hw_tx_byte(l_u8 data) { s_frames.back().push_back(data); return l_true; }
+l_bool open_lin_hw_rx_byte(l_u8 *data, l_u32 timeout_us)
+{
+	(void)timeout_us;
+	if (s_rx_pos < s_rx_feed.size()) { *data = s_rx_feed[s_rx_pos++]; return l_true; }
+	return l_false;
+}
+void open_lin_master_dl_rx_callback(open_lin_frame_slot_t *slot) { if (s_on_rx_callback) s_on_rx_callback(slot); }
+void open_lin_master_transport_layer_handle_tx(open_lin_frame_slot_t *slot) { (void)slot; }
+void open_lin_master_transport_layer_handle_rx(open_lin_frame_slot_t *slot) { (void)slot; }
+
+static l_u8 buf_a1[1] = {0x11}, buf_a2[1] = {0x22};
+static l_u8 buf_b1[1] = {0x33}, buf_b2[1] = {0x44}, buf_b3[1] = {0x55};
+static l_u8 buf_rx[1];
+
+static t_master_frame_table_item table_a[] = {
+	{100000, {0x01, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_a1}, NULL},
+	{100000, {0x02, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_a2}, NULL},
+};
+static t_master_frame_table_item table_b[] = {
+	{100000, {0x0A, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_b1}, NULL},
+	{100000, {0x0B, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_b2}, NULL},
+	{100000, {0x0C, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_b3}, NULL},
+};
+static t_master_frame_table_item table_c[] = {
+	{100000, {0x20, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_a2}, NULL},
+};
+static t_master_frame_table_item table_rx[] = {
+	{100000, {0x03, OPEN_LIN_FRAME_TYPE_RECEIVE, 1, buf_rx}, NULL},
+	{100000, {0x04, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_a1}, NULL},
+};
+}
+
+#define TABLE_SIZE(t) ((l_u8)(sizeof(t) / sizeof((t)[0])))
+
+/* PID byte of the n-th frame sent since reset: frame bytes are 0x55, PID, data..., checksum (the break itself is not recorded) */
+static uint8_t sent_pid(size_t n) { return s_frames.at(n).at(1); }
+
+static void reset_sim(void)
+{
+	s_frames.clear();
+	s_rx_feed.clear();
+	s_rx_pos = 0;
+	s_on_rx_callback = 0;
+	s_errors.clear();
+}
+
+TEST_CASE("switch_schedule_table rejects NULL and empty tables", "[open_lin_master_schedule]")
+{
+	reset_sim();
+	open_lin_master_dl_init(table_a, TABLE_SIZE(table_a));
+	CHECK(open_lin_master_dl_switch_schedule_table(NULL, 3) == l_false);
+	CHECK(open_lin_master_dl_switch_schedule_table(table_b, 0) == l_false);
+
+	/* rejected requests leave the current table running unchanged */
+	open_lin_master_dl_handler();
+	open_lin_master_dl_handler();
+	REQUIRE(s_frames.size() == 2);
+	CHECK(sent_pid(0) == open_lin_data_layer_parity(0x01));
+	CHECK(sent_pid(1) == open_lin_data_layer_parity(0x02));
+}
+
+TEST_CASE("switch_schedule_table between frames starts the new table at entry 0", "[open_lin_master_schedule]")
+{
+	reset_sim();
+	open_lin_master_dl_init(table_a, TABLE_SIZE(table_a));
+	open_lin_master_dl_handler();             /* A[0] */
+	REQUIRE(s_frames.size() == 1);
+
+	CHECK(open_lin_master_dl_switch_schedule_table(table_b, TABLE_SIZE(table_b)) == l_true);
+	open_lin_master_dl_handler();             /* B[0], not A[1] */
+	open_lin_master_dl_handler();             /* B[1] */
+	open_lin_master_dl_handler();             /* B[2] */
+	open_lin_master_dl_handler();             /* wraps to B[0], stays on B */
+
+	REQUIRE(s_frames.size() == 5);
+	CHECK(sent_pid(0) == open_lin_data_layer_parity(0x01));
+	CHECK(sent_pid(1) == open_lin_data_layer_parity(0x0A));
+	CHECK(sent_pid(2) == open_lin_data_layer_parity(0x0B));
+	CHECK(sent_pid(3) == open_lin_data_layer_parity(0x0C));
+	CHECK(sent_pid(4) == open_lin_data_layer_parity(0x0A));
+}
+
+TEST_CASE("switch_schedule_table requested mid-frame waits for the frame to finish", "[open_lin_master_schedule]")
+{
+	reset_sim();
+	open_lin_master_dl_init(table_rx, TABLE_SIZE(table_rx));
+
+	/* RX slot 0x03 with a valid response; the switch is requested from inside the rx callback, i.e. mid-frame */
+	{
+		l_u8 data = 0x05;
+		s_rx_feed.push_back(data);
+		s_rx_feed.push_back(open_lin_data_layer_checksum(0x03, OPEN_LIN_CHECKSUM_ENHANCED, 1, &data));
+	}
+	static bool callback_ran;
+	callback_ran = false;
+	s_on_rx_callback = [](open_lin_frame_slot_t *slot) {
+		callback_ran = true;
+		CHECK(slot->pid == 0x03);
+		CHECK(slot->data_ptr[0] == 0x05);
+		open_lin_master_dl_switch_schedule_table(table_b, TABLE_SIZE(table_b));
+	};
+
+	open_lin_master_dl_handler();             /* whole RX frame 0x03, request arrives inside it */
+	CHECK(callback_ran);
+	open_lin_master_dl_handler();             /* next frame comes from table B, not table_rx[1] (0x04) */
+	REQUIRE(s_frames.size() == 2);
+	CHECK(sent_pid(0) == open_lin_data_layer_parity(0x03));
+	CHECK(sent_pid(1) == open_lin_data_layer_parity(0x0A));
+}
+
+TEST_CASE("a later switch request replaces an earlier pending one", "[open_lin_master_schedule]")
+{
+	reset_sim();
+	open_lin_master_dl_init(table_a, TABLE_SIZE(table_a));
+	open_lin_master_dl_switch_schedule_table(table_b, TABLE_SIZE(table_b));
+	open_lin_master_dl_switch_schedule_table(table_c, TABLE_SIZE(table_c));
+	open_lin_master_dl_handler();
+	REQUIRE(s_frames.size() == 1);
+	CHECK(sent_pid(0) == open_lin_data_layer_parity(0x20));
+}
+
+TEST_CASE("init discards a pending switch request", "[open_lin_master_schedule]")
+{
+	reset_sim();
+	open_lin_master_dl_init(table_a, TABLE_SIZE(table_a));
+	open_lin_master_dl_switch_schedule_table(table_b, TABLE_SIZE(table_b));
+	open_lin_master_dl_init(table_a, TABLE_SIZE(table_a));
+	open_lin_master_dl_handler();
+	REQUIRE(s_frames.size() == 1);
+	CHECK(sent_pid(0) == open_lin_data_layer_parity(0x01));
+}
+
+/* ---- Event-triggered frames and collision resolving (Section 2.3.3.2) ---- */
+static l_u8 buf_ev[2], buf_c1[2], buf_c2[2];
+static const open_lin_frame_slot_t cand1 = {0x04, OPEN_LIN_FRAME_TYPE_RECEIVE, 2, buf_c1};
+static const open_lin_frame_slot_t cand2 = {0x02, OPEN_LIN_FRAME_TYPE_RECEIVE, 2, buf_c2};
+static const open_lin_frame_slot_t *cands[] = {&cand1, &cand2};
+static l_u8 buf_poll[1] = {0};
+static t_master_frame_table_item collision_table[] = {
+	{100000, {0x30, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_poll}, NULL},
+	{100000, {0x31, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_poll}, NULL},
+};
+static const open_lin_event_trigger_t event_trigger = {cands, 2, collision_table, TABLE_SIZE(collision_table)};
+static t_master_frame_table_item table_ev[] = {
+	{100000, {0x01, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_a1}, NULL},
+	{100000, {0x06, OPEN_LIN_FRAME_TYPE_RECEIVE,  2, buf_ev}, &event_trigger},
+	{100000, {0x02, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_a2}, NULL},
+};
+static t_master_frame_table_item table_ev_last[] = {
+	{100000, {0x01, OPEN_LIN_FRAME_TYPE_TRANSMIT, 1, buf_a1}, NULL},
+	{100000, {0x06, OPEN_LIN_FRAME_TYPE_RECEIVE,  2, buf_ev}, &event_trigger},
+};
+
+static open_lin_pid_t s_rx_pid;
+static l_u8 s_rx_data1;
+static int s_rx_count;
+static void record_rx(open_lin_frame_slot_t *slot) { s_rx_pid = slot->pid; s_rx_data1 = slot->data_ptr[1]; s_rx_count++; }
+
+/* Response to the 0x06 header: data byte 0 is the responder's protected id; the checksum covers the header's PID (0x06) */
+static void feed_event_response(l_u8 protected_id, l_u8 value, bool good_checksum = true)
+{
+	l_u8 data[2] = {protected_id, value};
+	l_u8 cs = open_lin_data_layer_checksum(0x06, OPEN_LIN_CHECKSUM_ENHANCED, 2, data);
+	s_rx_feed.push_back(data[0]);
+	s_rx_feed.push_back(data[1]);
+	s_rx_feed.push_back(good_checksum ? cs : (l_u8)(cs ^ 0xFF));
+	s_rx_count = 0;
+	s_on_rx_callback = record_rx;
+}
+
+static void run(int n) { for (int i = 0; i < n; i++) open_lin_master_dl_handler(); }
+
+TEST_CASE("event-triggered slot with no response stays silent", "[open_lin_master_schedule]")
+{
+	reset_sim();
+	open_lin_master_dl_init(table_ev, TABLE_SIZE(table_ev));
+	run(3);
+	REQUIRE(s_frames.size() == 3);
+	CHECK(sent_pid(0) == open_lin_data_layer_parity(0x01));
+	CHECK(sent_pid(1) == open_lin_data_layer_parity(0x06));
+	CHECK(sent_pid(2) == open_lin_data_layer_parity(0x02));
+	CHECK(s_errors.empty());
+}
+
+TEST_CASE("event-triggered response is dispatched to the candidate named by data byte 0", "[open_lin_master_schedule]")
+{
+	reset_sim();
+	open_lin_master_dl_init(table_ev, TABLE_SIZE(table_ev));
+	run(1);                                                /* 0x01 */
+	feed_event_response(open_lin_data_layer_parity(0x04), 0x77);
+	run(2);                                                /* 0x06 answered by the first candidate, then 0x02 */
+	CHECK(s_errors.empty());
+	CHECK(s_rx_count == 1);
+	CHECK(s_rx_pid == 0x04);
+	CHECK(buf_c1[0] == open_lin_data_layer_parity(0x04));
+	CHECK(buf_c1[1] == 0x77);
+	CHECK(sent_pid(s_frames.size() - 1) == open_lin_data_layer_parity(0x02));  /* no table switch */
+
+	reset_sim();
+	open_lin_master_dl_init(table_ev, TABLE_SIZE(table_ev));
+	run(1);
+	feed_event_response(open_lin_data_layer_parity(0x02), 0x55);
+	run(1);
+	CHECK(s_rx_pid == 0x02);
+	CHECK(buf_c2[1] == 0x55);
+}
+
+TEST_CASE("event-triggered collision runs the collision table once, then resumes after the event entry", "[open_lin_master_schedule]")
+{
+	reset_sim();
+	open_lin_master_dl_init(table_ev, TABLE_SIZE(table_ev));
+	run(1);                                                /* 0x01 */
+	feed_event_response(0xAA, 0xBB, false);                /* garbled: bad checksum */
+	run(1);                                                /* 0x06 -> collision */
+	REQUIRE(s_errors.size() == 1);
+	CHECK(s_errors[0] == OPEN_LIN_MASTER_ERROR_EVENT_COLLISION);
+	CHECK(s_rx_count == 0);
+
+	run(5);                                                /* 0x30, 0x31, resume: 0x02, 0x01, 0x06 */
+	REQUIRE(s_frames.size() == 7);
+	CHECK(sent_pid(2) == open_lin_data_layer_parity(0x30));
+	CHECK(sent_pid(3) == open_lin_data_layer_parity(0x31));
+	CHECK(sent_pid(4) == open_lin_data_layer_parity(0x02)); /* the entry after the event frame, not 0x01 again */
+	CHECK(sent_pid(5) == open_lin_data_layer_parity(0x01));
+	CHECK(sent_pid(6) == open_lin_data_layer_parity(0x06));
+}
+
+TEST_CASE("collision on the last entry resumes at the first entry", "[open_lin_master_schedule]")
+{
+	reset_sim();
+	open_lin_master_dl_init(table_ev_last, TABLE_SIZE(table_ev_last));
+	run(1);
+	feed_event_response(0xAA, 0xBB, false);
+	run(4);                                                /* 0x06 collision, 0x30, 0x31, back to 0x01 */
+	REQUIRE(s_frames.size() == 5);
+	CHECK(sent_pid(2) == open_lin_data_layer_parity(0x30));
+	CHECK(sent_pid(3) == open_lin_data_layer_parity(0x31));
+	CHECK(sent_pid(4) == open_lin_data_layer_parity(0x01));
+}
+
+TEST_CASE("a partial event-triggered response counts as a collision", "[open_lin_master_schedule]")
+{
+	reset_sim();
+	open_lin_master_dl_init(table_ev_last, TABLE_SIZE(table_ev_last));
+	run(1);
+	s_rx_feed.push_back(0xAA);                             /* one byte, then silence until the slot times out */
+	run(2);
+	REQUIRE(s_errors.size() == 1);
+	CHECK(s_errors[0] == OPEN_LIN_MASTER_ERROR_EVENT_COLLISION);
+	CHECK(sent_pid(2) == open_lin_data_layer_parity(0x30));
+}
+
+TEST_CASE("event-triggered response with an unknown PID is an error, not a collision", "[open_lin_master_schedule]")
+{
+	reset_sim();
+	open_lin_master_dl_init(table_ev, TABLE_SIZE(table_ev));
+	run(1);
+	feed_event_response(open_lin_data_layer_parity(0x09), 0x01);   /* valid checksum, but 0x09 isn't a candidate */
+	run(2);
+	REQUIRE(s_errors.size() == 1);
+	CHECK(s_errors[0] == OPEN_LIN_MASTER_ERROR_EVENT_UNKNOWN_PID);
+	CHECK(s_rx_count == 0);
+	CHECK(sent_pid(2) == open_lin_data_layer_parity(0x02));        /* no collision switch */
+}
+
+TEST_CASE("switching tables while a collision is being resolved cancels the resolving", "[open_lin_master_schedule]")
+{
+	reset_sim();
+	open_lin_master_dl_init(table_ev, TABLE_SIZE(table_ev));
+	run(1);
+	feed_event_response(0xAA, 0xBB, false);
+	run(2);                                                /* 0x06 collision, 0x30 */
+	open_lin_master_dl_switch_schedule_table(table_c, TABLE_SIZE(table_c));
+	run(3);                                                /* table_c only: never back to table_ev */
+	REQUIRE(s_frames.size() == 6);
+	CHECK(sent_pid(3) == open_lin_data_layer_parity(0x20));
+	CHECK(sent_pid(4) == open_lin_data_layer_parity(0x20));
+	CHECK(sent_pid(5) == open_lin_data_layer_parity(0x20));
+}

@@ -19,6 +19,14 @@ static l_u8 master_rx_count = 0;
 static l_u8 master_table_index = 0;
 static t_master_frame_table_item *master_frame_table;
 static l_u8 master_frame_table_size = 0;
+static t_master_frame_table_item *pending_table = (t_master_frame_table_item *)0;
+static l_u8 pending_table_size = 0;
+
+/* Collision resolving (Section 2.3.3.2): the table to return to, and the entry to continue with */
+static l_bool collision_active = l_false;
+static t_master_frame_table_item *resume_table = (t_master_frame_table_item *)0;
+static l_u8 resume_table_size = 0;
+static l_u8 resume_index = 0;
 
 static l_u32 frame_start_time_us = 0;
 static l_bool master_network_asleep = l_false;
@@ -54,7 +62,21 @@ void open_lin_master_dl_init(t_master_frame_table_item *p_master_frame_table, l_
 {
 	master_frame_table = p_master_frame_table;
 	master_frame_table_size = p_master_frame_table_size;
+	pending_table = (t_master_frame_table_item *)0;
+	collision_active = l_false;
+	master_table_index = 0;
 	open_lin_master_goto_idle(l_false);
+}
+
+l_bool open_lin_master_dl_switch_schedule_table(t_master_frame_table_item *p_table, l_u8 p_size)
+{
+	if ((p_table == (t_master_frame_table_item *)0) || (p_size == 0u))
+	{
+		return l_false;
+	}
+	pending_table = p_table;
+	pending_table_size = p_size;
+	return l_true;
 }
 
 static t_master_frame_table_item* get_current_item(void)
@@ -67,10 +89,62 @@ static void data_layer_next_item(void)
 
 	if (master_table_index >= (l_u8)(master_frame_table_size - 1u))
 	{
-		master_table_index = 0;
+		if (collision_active == l_true)
+		{
+			/* collision resolving table processed once: back to the table it came from */
+			master_frame_table = resume_table;
+			master_frame_table_size = resume_table_size;
+			master_table_index = resume_index;
+			collision_active = l_false;
+		} else
+		{
+			master_table_index = 0;
+		}
 	} else {
 		master_table_index ++;
 	}
+}
+
+/* Section 2.3.3.2: switch to the event-triggered frame's collision resolving table, starting with the
+ * next frame slot. Returns l_false (nothing changes) if one is already running or none is configured. */
+static l_bool start_collision_resolving(const open_lin_event_trigger_t *event)
+{
+	if ((collision_active == l_true) || (event->collision_table == (t_master_frame_table_item *)0) || (event->collision_table_size == 0u))
+	{
+		return l_false;
+	}
+	resume_table = master_frame_table;
+	resume_table_size = master_frame_table_size;
+	resume_index = (master_table_index >= (l_u8)(master_frame_table_size - 1u)) ? 0u : (l_u8)(master_table_index + 1u);
+	master_frame_table = event->collision_table;
+	master_frame_table_size = event->collision_table_size;
+	master_table_index = 0;
+	collision_active = l_true;
+	return l_true;
+}
+
+/* Garbled or incomplete response to an event-triggered header: more than one slave answered */
+static void event_collision(const open_lin_event_trigger_t *event)
+{
+	open_lin_error_handler(OPEN_LIN_MASTER_ERROR_EVENT_COLLISION);
+	open_lin_master_goto_idle(start_collision_resolving(event) ? l_false : l_true);
+}
+
+/* Valid response to an event-triggered header: the PID in data byte 0 says which associated frame it is */
+static void event_frame_received(const open_lin_event_trigger_t *event, const l_u8 *data, l_u8 length)
+{
+	l_u8 i;
+	for (i = 0u; (i < event->candidate_count) && (length > 0u); i++)
+	{
+		const open_lin_frame_slot_t *candidate = event->candidates[i];
+		if (data[0] == open_lin_data_layer_parity(candidate->pid))
+		{
+			(void)open_lin_memcpy(candidate->data_ptr, data, length);
+			open_lin_master_dl_rx_callback((open_lin_frame_slot_t *)candidate);
+			return;
+		}
+	}
+	open_lin_error_handler(OPEN_LIN_MASTER_ERROR_EVENT_UNKNOWN_PID);
 }
 
 
@@ -111,18 +185,29 @@ l_bool open_lin_master_dl_rx(l_u8 rx_byte)
 			pending = l_true;
 		} else
 		{
+			const open_lin_event_trigger_t *event = get_current_item()->event_trigger;
 			if (rx_byte == open_lin_data_layer_checksum(slot->pid,slot->checksum_type,slot->data_length,frame_tmp_buffer))
 			{
-				(void)open_lin_memcpy(slot->data_ptr,frame_tmp_buffer,slot->data_length);
-#ifdef OPEN_LIN_TRANSPORT_LAYER
-				if (slot->pid == OPEN_LIN_DIAG_RESPONSE)
+				if (event != (const open_lin_event_trigger_t *)0)
 				{
-					open_lin_master_transport_layer_handle_rx(slot);
+					event_frame_received(event, frame_tmp_buffer, slot->data_length);
 				} else
-#endif
 				{
-					open_lin_master_dl_rx_callback(slot);
+					(void)open_lin_memcpy(slot->data_ptr,frame_tmp_buffer,slot->data_length);
+#ifdef OPEN_LIN_TRANSPORT_LAYER
+					if (slot->pid == OPEN_LIN_DIAG_RESPONSE)
+					{
+						open_lin_master_transport_layer_handle_rx(slot);
+					} else
+#endif
+					{
+						open_lin_master_dl_rx_callback(slot);
+					}
 				}
+			} else if (event != (const open_lin_event_trigger_t *)0)
+			{
+				event_collision(event);
+				return pending;
 			} else
 			{
 				open_lin_error_handler(OPEN_LIN_MASTER_ERROR_CHECKSUM);
@@ -151,7 +236,19 @@ l_bool open_lin_master_dl_send_wake_up(void)
 
 void open_lin_master_dl_handler()
 {
-	t_master_frame_table_item* master_table_item = get_current_item();
+	t_master_frame_table_item* master_table_item;
+
+	/* Apply a requested table switch only between frames, so the slot in progress isn't disturbed */
+	if ((pending_table != (t_master_frame_table_item *)0) && (lin_master_state == OPEN_LIN_MASTER_IDLE))
+	{
+		master_frame_table = pending_table;
+		master_frame_table_size = pending_table_size;
+		master_table_index = 0;
+		pending_table = (t_master_frame_table_item *)0;
+		collision_active = l_false; /* Section 2.3.3.2: switching tables before the collision is resolved cancels the resolving */
+	}
+
+	master_table_item = get_current_item();
 
 	if (master_network_asleep == l_true)
 	{
@@ -226,6 +323,18 @@ void open_lin_master_dl_handler()
 						frame_timeout = (open_lin_hw_get_time_us() - frame_start_time_us) > master_table_item->frame_slot_us;
 					} while (bytes_read <= 0 && !frame_timeout);
 					if (frame_timeout) {
+						if (master_table_item->event_trigger != (const open_lin_event_trigger_t *)0)
+						{
+							if (i == 0u)
+							{
+								/* Section 2.3.3.2: no slave had new data - the slot just stays silent, not an error */
+								open_lin_master_goto_idle(l_true);
+							} else
+							{
+								event_collision(master_table_item->event_trigger);
+							}
+							return;
+						}
 						open_lin_error_handler(OPEN_LIN_MASTER_ERROR_FRAME_SLOT_TIMEOUT);
 						open_lin_master_goto_idle(l_true);
 						return;
