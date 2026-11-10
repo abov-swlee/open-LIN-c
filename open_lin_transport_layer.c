@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file open_lin_transport_layer.c
  * @brief LIN transport layer implementation
  */

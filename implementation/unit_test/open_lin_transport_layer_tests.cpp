@@ -1,4 +1,4 @@
-﻿/*
+/*
  * open_lin_transport_layer_tests.cpp
  *
  *  Created on: 21 cze 2018

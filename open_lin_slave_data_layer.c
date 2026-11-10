@@ -22,8 +22,7 @@ static l_u8 open_lin_slave_state_data_count;
  * node owns (one of its own RX or TX frames, matched via open_lin_slave_set_lin_frame())
  * has an error in its response; cleared once the designated frame carrying the
  * bit is itself transmitted successfully. Event-triggered frame responses are
- * explicitly excluded (2.7.2) - moot today since this stack has no
- * event-triggered frame support yet (see the LDF-driven scheduling gap). */
+ * explicitly excluded (2.7.2): open_lin_slave_event_response() never sets it. */
 static l_bool s_response_error = l_false;
 static l_bool s_response_error_frame_configured = l_false;
 static open_lin_pid_t s_response_error_pid;

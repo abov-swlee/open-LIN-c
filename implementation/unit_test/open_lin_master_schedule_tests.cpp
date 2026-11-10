@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Schedule-table switching tests for the master data layer.
  * Self-contained: provides its own HW stubs, so it links against only
  * open_lin_master_data_layer.c and open_lin_data_layer.c.
