@@ -715,3 +715,122 @@ TEST_CASE("master diag schedule: an idle 0x3C slot does not start a response wai
 	CHECK(open_lin_master_diag_response_expected(s_fake_time_us) == l_false);
 }
 
+
+/* ---- NRC 0x78 "response pending" (Diagnostic Spec 5.6): keep waiting, now for P2* ---- */
+static void send_physical_request_and_drain(l_u32 at_us)
+{
+	s_fake_time_us = at_us;
+	uint8_t msg[] = {0xB2, 0x00};
+	REQUIRE(open_lin_master_diag_request(0x05, msg, sizeof(msg)) == l_true);
+	drain_master_request();
+}
+
+TEST_CASE("master diag pending: NRC 0x78 is not handed to the app and the wait continues for P2*", "[open_lin_transport_layer][tp][master][sched]") {
+	send_physical_request_and_drain(100000);
+	s_master_diag_response_called = l_false;
+
+	s_fake_time_us = 100000 + 400000; /* the slave answers "pending" within P2max */
+	uint8_t pending[8] = {0x05, 0x03, 0x7F, 0xB2, 0x78, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t pending_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, pending};
+	open_lin_master_transport_layer_handle_rx(&pending_slot);
+
+	CHECK(s_master_diag_response_called == l_false);
+	/* well past P2max counted from the request, but within P2* counted from the pending frame */
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us + OPEN_LIN_MASTER_DIAG_P2_MAX_US + 1u) == l_true);
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us + OPEN_LIN_MASTER_DIAG_P2_STAR_US) == l_true);      /* at P2*, not past it */
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us + OPEN_LIN_MASTER_DIAG_P2_STAR_US + 1u) == l_false); /* gave up */
+}
+
+TEST_CASE("master diag pending: the final response after NRC 0x78 is delivered and ends the wait", "[open_lin_transport_layer][tp][master][sched]") {
+	send_physical_request_and_drain(200000);
+	uint8_t pending[8] = {0x05, 0x03, 0x7F, 0xB2, 0x78, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t pending_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, pending};
+	open_lin_master_transport_layer_handle_rx(&pending_slot);
+
+	s_master_diag_response_called = l_false;
+	s_fake_time_us += 1000000;
+	uint8_t final_resp[8] = {0x05, 0x03, 0xF2, 0x11, 0x22, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t final_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, final_resp};
+	open_lin_master_transport_layer_handle_rx(&final_slot);
+
+	CHECK(s_master_diag_response_called == l_true);
+	CHECK(s_master_diag_response_buf[0] == 0xF2);
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us) == l_false);
+}
+
+TEST_CASE("master diag pending: a repeated NRC 0x78 restarts the P2* wait", "[open_lin_transport_layer][tp][master][sched]") {
+	send_physical_request_and_drain(300000);
+	uint8_t pending[8] = {0x05, 0x03, 0x7F, 0xB2, 0x78, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t pending_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, pending};
+	open_lin_master_transport_layer_handle_rx(&pending_slot);
+	s_fake_time_us += OPEN_LIN_MASTER_DIAG_P2_STAR_US - 1000u;
+	open_lin_master_transport_layer_handle_rx(&pending_slot); /* still pending, just before the first wait would have run out */
+
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us + OPEN_LIN_MASTER_DIAG_P2_STAR_US) == l_true);
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us + OPEN_LIN_MASTER_DIAG_P2_STAR_US + 1u) == l_false);
+}
+
+TEST_CASE("master diag pending: other negative responses are final and delivered", "[open_lin_transport_layer][tp][master][sched]") {
+	send_physical_request_and_drain(400000);
+	s_master_diag_response_called = l_false;
+	uint8_t negative[8] = {0x05, 0x03, 0x7F, 0xB2, 0x22, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t negative_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, negative};
+	open_lin_master_transport_layer_handle_rx(&negative_slot);
+
+	CHECK(s_master_diag_response_called == l_true);
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us) == l_false);
+}
+
+TEST_CASE("master diag pending: a new request goes back to P2max", "[open_lin_transport_layer][tp][master][sched]") {
+	send_physical_request_and_drain(500000);
+	uint8_t pending[8] = {0x05, 0x03, 0x7F, 0xB2, 0x78, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t pending_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, pending};
+	open_lin_master_transport_layer_handle_rx(&pending_slot);
+
+	send_physical_request_and_drain(s_fake_time_us + 10000);
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us + OPEN_LIN_MASTER_DIAG_P2_MAX_US) == l_true);
+	CHECK(open_lin_master_diag_response_expected(s_fake_time_us + OPEN_LIN_MASTER_DIAG_P2_MAX_US + 1u) == l_false);
+}
+
+/* ---- debug hook: slave answers "response pending" first, the real response after a delay ---- */
+TEST_CASE("slave debug pending: NRC 0x78 goes out first, the real response only after the delay", "[open_lin_transport_layer][tp][debug]") {
+	open_lin_NAD = 0x01;
+	open_lin_supplier_id = 0x1234;
+	open_lin_function_id = 0x5678;
+	s_fake_time_us = 1000000;
+	open_lin_transport_layer_debug_response_pending(300000);
+
+	uint8_t req[8] = {0x01, 0x06, 0xB0, 0x34, 0x12, 0x78, 0x56, 0x22}; /* Assign NAD */
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[2] == 0x7F);
+	CHECK(resp[3] == 0xB0);
+	CHECK(resp[4] == 0x78);
+
+	open_lin_transport_layer_poll(s_fake_time_us + 299999);   /* too early */
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[0] == 0xFF); /* idle */
+
+	open_lin_transport_layer_poll(s_fake_time_us + 300000);
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[0] == 0x01);
+	CHECK(resp[2] == 0xF0); /* the real positive response */
+}
+
+TEST_CASE("slave debug pending: one shot, the next response is immediate again", "[open_lin_transport_layer][tp][debug]") {
+	open_lin_NAD = 0x22;
+	open_lin_supplier_id = 0x1234;
+	open_lin_function_id = 0x5678;
+	uint8_t req[8] = {0x22, 0x06, 0xB0, 0x34, 0x12, 0x78, 0x56, 0x22};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[2] == 0xF0);
+}

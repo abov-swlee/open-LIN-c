@@ -108,6 +108,7 @@ static l_bool s_master_tp_tx_go_to_sleep_pending = l_false;
  * for the response until it is complete or P2max passes without it starting. */
 static l_bool s_master_tp_response_expected = l_false;
 static l_u32 s_master_tp_response_start_us = 0u;
+static l_u32 s_master_tp_response_window_us = OPEN_LIN_MASTER_DIAG_P2_MAX_US; /* P2max, or P2* after a "response pending" */
 
 static l_bool open_lin_id_match(uint16_t val, uint16_t expected, uint16_t wildcard)
 {
@@ -268,6 +269,35 @@ static t_open_lin_sid_result open_lin_assign_frame_id_range_handler(const l_u8 *
 	return OPEN_LIN_SID_RESULT_POSITIVE;
 }
 
+/* debug/test only: see open_lin_transport_layer_debug_response_pending(). The real response is held back
+ * here while a "response pending" goes out first, and is queued for transmission once the delay is over. */
+static l_u32 s_debug_pending_delay_us = 0u;
+static l_u8 s_debug_final_buf[OPEN_LIN_TP_MAX_MSG_LEN];
+static l_u16 s_debug_final_len = 0u;
+static l_u32 s_debug_final_due_us = 0u;
+
+void open_lin_transport_layer_debug_response_pending(l_u32 delay_us)
+{
+	s_debug_pending_delay_us = delay_us;
+}
+
+static void defer_response_if_debug(l_u8 sid)
+{
+	if ((s_debug_pending_delay_us == 0u) || (s_tp_tx_ctx.active == l_false))
+	{
+		return; /* not armed, or the service stayed silent */
+	}
+	s_debug_final_len = s_tp_tx_ctx.total_len;
+	(void)open_lin_memcpy(s_debug_final_buf, s_tp_response_buf, s_debug_final_len);
+	s_debug_final_due_us = open_lin_hw_get_time_us() + s_debug_pending_delay_us;
+	s_debug_pending_delay_us = 0u; /* one shot */
+
+	s_tp_response_buf[0] = 0x7Fu;
+	s_tp_response_buf[1] = sid;
+	s_tp_response_buf[2] = 0x78u; /* response pending */
+	open_lin_tp_tx_start(&s_tp_tx_ctx, s_tp_response_buf, 3u);
+}
+
 /**
  * @brief Dispatch one fully reassembled node-configuration message (SF, or
  *        FF+CF concatenated) to its SID handler.
@@ -322,6 +352,7 @@ static void open_lin_transport_layer_dispatch(const l_u8 *msg, l_u16 len, open_l
 					break; /* stay silent, nothing queued */
 			}
 
+			defer_response_if_debug(msg[0]);
 			open_lin_sid_callback((open_lin_SID_t)msg[0]);
 			return;
 		}
@@ -503,6 +534,14 @@ l_bool open_lin_tp_tx_next(t_open_lin_tp_tx_ctx *ctx, open_lin_NAD_t nad, l_u8 *
 
 void open_lin_transport_layer_poll(l_u32 now_us)
 {
+	if ((s_debug_final_len > 0u) && (s_tp_tx_ctx.active == l_false) && ((l_u32)(now_us - s_debug_final_due_us) < 0x80000000u))
+	{
+		/* the delay is over and the "response pending" has gone out: now the real response */
+		(void)open_lin_memcpy(s_tp_response_buf, s_debug_final_buf, s_debug_final_len);
+		open_lin_tp_tx_start(&s_tp_tx_ctx, s_tp_response_buf, s_debug_final_len);
+		s_debug_final_len = 0u;
+	}
+
 	if (open_lin_tp_rx_timed_out(&s_tp_rx_ctx, now_us) == l_true)
 	{
 		open_lin_tp_rx_init(&s_tp_rx_ctx); /* drop the stale partial message so the next SF/FF starts clean */
@@ -572,9 +611,9 @@ l_bool open_lin_master_diag_response_expected(l_u32 now_us)
 {
 	if ((s_master_tp_response_expected == l_true) &&
 	    (s_master_tp_rx_ctx.active == l_false) &&
-	    ((l_u32)(now_us - s_master_tp_response_start_us) > OPEN_LIN_MASTER_DIAG_P2_MAX_US))
+	    ((l_u32)(now_us - s_master_tp_response_start_us) > s_master_tp_response_window_us))
 	{
-		s_master_tp_response_expected = l_false; /* P2max passed without the response starting */
+		s_master_tp_response_expected = l_false; /* P2max (P2* after a "response pending") passed without the response starting */
 	}
 	return s_master_tp_response_expected;
 }
@@ -630,6 +669,7 @@ void open_lin_master_transport_layer_handle_tx(open_lin_frame_slot_t *slot)
 	{
 		/* last frame of the request is going out: from here the slave's response is awaited */
 		s_master_tp_response_expected = l_true;
+		s_master_tp_response_window_us = OPEN_LIN_MASTER_DIAG_P2_MAX_US;
 		s_master_tp_response_start_us = open_lin_hw_get_time_us();
 	}
 
@@ -663,6 +703,15 @@ void open_lin_master_transport_layer_handle_rx(open_lin_frame_slot_t *slot)
 
 	if (open_lin_tp_rx_feed(&s_master_tp_rx_ctx, slot->data_ptr, expected_nad, open_lin_hw_get_time_us()) == l_true)
 	{
+		if ((s_master_tp_rx_ctx.received_len == 3u) && (s_master_tp_rx_ctx.buffer[0] == 0x7Fu) &&
+		    (s_master_tp_rx_ctx.buffer[2] == OPEN_LIN_NRC_RESPONSE_PENDING))
+		{
+			/* Diagnostic Spec 5.6: not the final response - the slave needs more time. Keep waiting, now for
+			 * up to P2* from this frame, and don't hand the application a response that isn't one. */
+			s_master_tp_response_window_us = OPEN_LIN_MASTER_DIAG_P2_STAR_US;
+			s_master_tp_response_start_us = open_lin_hw_get_time_us();
+			return;
+		}
 		s_master_tp_response_expected = l_false; /* response complete */
 		open_lin_master_diag_response_callback(s_master_tp_rx_ctx.buffer, s_master_tp_rx_ctx.received_len);
 	}

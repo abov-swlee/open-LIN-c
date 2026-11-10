@@ -117,6 +117,15 @@ l_bool open_lin_tp_rx_timed_out(const t_open_lin_tp_rx_ctx *ctx, l_u32 now_us);
  */
 void open_lin_transport_layer_poll(l_u32 now_us);
 
+/**
+ * @brief Debug/test only, slave side: the next request that gets a response is answered
+ *        with a "response pending" (0x7F, SID, 0x78) first, and the real response follows
+ *        once delay_us has passed (sent from open_lin_transport_layer_poll(), so that has
+ *        to keep being called). Lets the master's P2* handling be tried on real hardware.
+ *        One shot; delay_us = 0 disarms.
+ */
+void open_lin_transport_layer_debug_response_pending(l_u32 delay_us);
+
 /** @brief N_Cr supervision for the master's response-reassembly session - see open_lin_transport_layer_poll(). */
 void open_lin_master_transport_layer_poll(l_u32 now_us);
 
@@ -170,6 +179,14 @@ l_bool open_lin_master_send_go_to_sleep(void);
 #define OPEN_LIN_MASTER_DIAG_P2_MAX_US 500000u
 #endif
 
+/** @brief Diagnostic Spec 5.6 Table 5.3: P2*, how long the master keeps waiting after the slave answered "response pending" (NRC 0x78). */
+#ifndef OPEN_LIN_MASTER_DIAG_P2_STAR_US
+#define OPEN_LIN_MASTER_DIAG_P2_STAR_US 2000000u
+#endif
+
+/** @brief Negative response code "response pending": the final response follows later (Diagnostic Spec Table 4.21 / 5.6). */
+#define OPEN_LIN_NRC_RESPONSE_PENDING 0x78u
+
 /**
  * @brief Master side: is there a master request frame (a request's SF/FF/CF, or a
  *        go-to-sleep frame) still waiting to go out? The master data layer uses
@@ -183,7 +200,9 @@ l_bool open_lin_master_diag_tx_pending(void);
  *        and the response is neither complete nor timed out? Used to decide when
  *        to run the diagnostic slave response schedule. Gives up once P2max has
  *        passed without the first response frame arriving; after that, the
- *        multi-frame reassembly timeout (N_Cr) takes over.
+ *        multi-frame reassembly timeout (N_Cr) takes over. A "response pending"
+ *        negative response (0x7F, SID, 0x78) is not delivered to the application:
+ *        it only restarts the wait with the longer P2* limit.
  */
 l_bool open_lin_master_diag_response_expected(l_u32 now_us);
 
