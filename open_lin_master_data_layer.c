@@ -16,6 +16,12 @@ static t_open_lin_master_state lin_master_state;
 static void (*lin_master_state_callback)(t_open_lin_master_state);
 
 static l_u8 master_rx_count = 0;
+
+/* The response being received: the hardware stores its bytes here in the background
+ * (open_lin_hw_rx_start) and the handler feeds them to open_lin_master_dl_rx() as they arrive.
+ * One byte more than the longest frame, for the checksum. */
+static l_u8 rx_stage[OPEN_LIN_MAX_FRAME_LENGTH + 1u];
+static l_u8 rx_fed = 0;
 static l_u8 master_table_index = 0;
 static t_master_frame_table_item *master_frame_table;
 static l_u8 master_frame_table_size = 0;
@@ -60,6 +66,7 @@ static void open_lin_master_set_state(t_open_lin_master_state new_state)
 static void open_lin_master_goto_idle(l_bool next_item)
 {
 	master_rx_count = 0;
+	rx_fed = 0;
 	open_lin_master_set_state(OPEN_LIN_MASTER_IDLE);
 	if (next_item)
 	{
@@ -362,6 +369,20 @@ l_bool open_lin_master_dl_send_wake_up(void)
 	return open_lin_hw_tx_break();
 }
 
+/* Feeds the bytes that have arrived since the last call. The frame is complete, or ends in an error,
+ * inside open_lin_master_dl_rx(), which leaves the DATA_RX state then. */
+static void rx_drain(void)
+{
+	l_u8 arrived = open_lin_hw_rx_count();
+
+	while ((rx_fed < arrived) && (lin_master_state == OPEN_LIN_MASTER_DATA_RX))
+	{
+		l_u8 rx_byte = rx_stage[rx_fed];
+		rx_fed++;
+		(void)open_lin_master_dl_rx(rx_byte);
+	}
+}
+
 void open_lin_master_dl_handler()
 {
 	t_master_frame_table_item* master_table_item;
@@ -408,6 +429,8 @@ void open_lin_master_dl_handler()
 				{
 					open_lin_master_set_state(OPEN_LIN_MASTER_DATA_RX);
 					master_rx_count = 0;
+					rx_fed = 0;
+					open_lin_hw_rx_start(rx_stage, (l_u8)(master_table_item->slot.data_length + 1u)); /* data and checksum */
 					open_lin_set_rx_enabled(l_true); // Ready for receiving from Slave
 				}
 			} else
@@ -417,9 +440,36 @@ void open_lin_master_dl_handler()
 			}
 		} else
 		{
-			l_u32 frame_time_passed = open_lin_hw_get_time_us() - frame_start_time_us;
+			l_u32 frame_time_passed;
+
+			if (lin_master_state == OPEN_LIN_MASTER_DATA_RX)
+			{
+				rx_drain(); /* take what has arrived before judging the timeout */
+				if (lin_master_state != OPEN_LIN_MASTER_DATA_RX)
+				{
+					return; /* the frame is complete */
+				}
+			}
+
+			frame_time_passed = open_lin_hw_get_time_us() - frame_start_time_us;
 			if (frame_time_passed > master_table_item->frame_slot_us)
 			{
+				if (lin_master_state == OPEN_LIN_MASTER_DATA_RX)
+				{
+					open_lin_hw_rx_abort();
+					if (master_table_item->event_trigger != (const open_lin_event_trigger_t *)0)
+					{
+						if (rx_fed == 0u)
+						{
+							/* Section 2.3.3.2: no slave had new data - the slot just stays silent, not an error */
+							open_lin_master_goto_idle(l_true);
+						} else
+						{
+							event_collision(master_table_item->event_trigger);
+						}
+						return;
+					}
+				}
 				open_lin_error_handler(OPEN_LIN_MASTER_ERROR_FRAME_SLOT_TIMEOUT);
 				open_lin_master_goto_idle(l_true);
 				return;
@@ -435,44 +485,7 @@ void open_lin_master_dl_handler()
 			}
 			case OPEN_LIN_MASTER_DATA_RX:
 			{
-				l_u8 i = 0;
-				l_u8 len = 1 + master_table_item->slot.data_length; // extra 1 bytes for checksum
-				for (i = 0; i < len; i++) {
-					const l_u32 read_timeout = 1000;
-					l_bool frame_timeout = false;
-					l_u8 bytes_read = 0;
-					l_u8 rx_byte = 0;
-					do {
-						/* read into a local, not slot.data_ptr[i]: len goes one past
-						 * data_length for the checksum byte, which would write out
-						 * of bounds on a slot buffer sized to exactly data_length
-						 * (e.g. diag_response_buffer[8] with data_length=8).
-						 * open_lin_master_dl_rx() does its own buffering and only
-						 * copies into slot.data_ptr once the checksum validates. */
-						bytes_read = open_lin_hw_rx_byte(&rx_byte, read_timeout);
-						frame_timeout = (open_lin_hw_get_time_us() - frame_start_time_us) > master_table_item->frame_slot_us;
-					} while (bytes_read <= 0 && !frame_timeout);
-					if (frame_timeout) {
-						if (master_table_item->event_trigger != (const open_lin_event_trigger_t *)0)
-						{
-							if (i == 0u)
-							{
-								/* Section 2.3.3.2: no slave had new data - the slot just stays silent, not an error */
-								open_lin_master_goto_idle(l_true);
-							} else
-							{
-								event_collision(master_table_item->event_trigger);
-							}
-							return;
-						}
-						open_lin_error_handler(OPEN_LIN_MASTER_ERROR_FRAME_SLOT_TIMEOUT);
-						open_lin_master_goto_idle(l_true);
-						return;
-					}
-					else {
-						open_lin_master_dl_rx(rx_byte);
-					}
-				}
+				rx_drain();
 				break;
 			}
 

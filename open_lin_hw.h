@@ -38,6 +38,22 @@ l_bool open_lin_hw_tx_break(void);
 l_bool open_lin_hw_tx_byte(l_u8 data);
 l_bool open_lin_hw_rx_byte(l_u8 *data, l_u32 timeout_us);
 
+/**
+ * @brief Starts receiving len bytes into buffer and returns at once; the hardware stores the
+ *        bytes in the background as they arrive. Cancels a reception still pending.
+ *        Poll open_lin_hw_rx_count() for the progress.
+ */
+void open_lin_hw_rx_start(l_u8 *buffer, l_u8 len);
+
+/**
+ * @brief Number of bytes stored since open_lin_hw_rx_start(), also while the reception
+ *        is not complete yet (e.g. after a timeout).
+ */
+l_u8 open_lin_hw_rx_count(void);
+
+/** @brief Cancels the reception started with open_lin_hw_rx_start(), without disturbing the bus. */
+void open_lin_hw_rx_abort(void);
+
 #ifdef OPEN_LIN_AUTO_BAUD
 /**
  * @brief Starts auto baud procedure

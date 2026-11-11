@@ -34,6 +34,18 @@ l_bool open_lin_hw_rx_byte(l_u8 *data, l_u32 timeout_us)
 	if (s_rx_pos < s_rx_feed.size()) { *data = s_rx_feed[s_rx_pos++]; return l_true; }
 	return l_false;
 }
+/* The hardware stores the bytes that have arrived into the armed buffer; the feed is what the bus delivers. */
+static l_u8 *s_hw_rx_buffer = 0;
+static l_u8 s_hw_rx_len = 0;
+static l_u8 s_hw_rx_count = 0;
+static int s_hw_rx_aborts = 0;
+void open_lin_hw_rx_start(l_u8 *buffer, l_u8 len) { s_hw_rx_buffer = buffer; s_hw_rx_len = len; s_hw_rx_count = 0; }
+l_u8 open_lin_hw_rx_count(void)
+{
+	while ((s_hw_rx_count < s_hw_rx_len) && (s_rx_pos < s_rx_feed.size())) { s_hw_rx_buffer[s_hw_rx_count++] = s_rx_feed[s_rx_pos++]; }
+	return s_hw_rx_count;
+}
+void open_lin_hw_rx_abort(void) { s_hw_rx_len = 0; s_hw_rx_aborts++; }
 void open_lin_master_dl_rx_callback(open_lin_frame_slot_t *slot) { if (s_on_rx_callback) s_on_rx_callback(slot); }
 /* Diagnostic transport layer stand-in: a request of N frames is pending until N 0x3C slots have run,
  * then a response is awaited until a 0x3D slot delivers one. */
@@ -80,17 +92,25 @@ static t_master_frame_table_item table_rx[] = {
 /* PID byte of the n-th frame sent since reset: frame bytes are 0x55, PID, data..., checksum (the break itself is not recorded) */
 static uint8_t sent_pid(size_t n) { return s_frames.at(n).at(1); }
 
+static t_open_lin_master_state s_state = OPEN_LIN_MASTER_IDLE;
+static void track_state(t_open_lin_master_state state) { s_state = state; }
+
 static void reset_sim(void)
 {
 	s_frames.clear();
 	s_rx_feed.clear();
 	s_rx_pos = 0;
+	s_hw_rx_len = 0;
+	s_hw_rx_count = 0;
+	s_hw_rx_aborts = 0;
 	s_on_rx_callback = 0;
 	s_errors.clear();
 	s_stub_tx_pending = l_false;
 	s_stub_resp_expected = l_false;
 	s_stub_tx_frames_left = 0;
+	s_state = OPEN_LIN_MASTER_IDLE;
 	open_lin_master_dl_set_diagnostic_tables(NULL, 0, NULL, 0);
+	open_lin_master_dl_set_state_callback(track_state);
 }
 
 TEST_CASE("switch_schedule_table rejects NULL and empty tables", "[open_lin_master_schedule]")
@@ -217,7 +237,21 @@ static void feed_event_response(l_u8 protected_id, l_u8 value, bool good_checksu
 	s_on_rx_callback = record_rx;
 }
 
-static void run(int n) { for (int i = 0; i < n; i++) open_lin_master_dl_handler(); }
+/* Runs n frames: the handler is called repeatedly, as lin_process() does, until the next frame has started and
+ * finished - a response that never comes takes as many calls as the slot time needs to run out. */
+static void run(int n)
+{
+	for (int i = 0; i < n; i++)
+	{
+		size_t started = s_frames.size();
+		int guard = 0;
+		do
+		{
+			open_lin_master_dl_handler();
+		} while (((s_frames.size() == started) || (s_state != OPEN_LIN_MASTER_IDLE)) && (++guard < 100000));
+		REQUIRE(guard < 100000);
+	}
+}
 
 TEST_CASE("event-triggered slot with no response stays silent", "[open_lin_master_schedule]")
 {
@@ -533,7 +567,7 @@ TEST_CASE("event-triggered rules: init does not run a table that breaks them", "
 	};
 	reset_sim();
 	CHECK(open_lin_master_dl_init(table, TABLE_SIZE(table)) == l_false);
-	run(3);
+	for (int i = 0; i < 3; i++) { open_lin_master_dl_handler(); } /* no frame ever starts, so not run() */
 	CHECK(s_frames.empty());
 	REQUIRE(s_errors.size() == 1);
 	CHECK(s_errors[0] == OPEN_LIN_MASTER_ERROR_EVENT_CONFIG);
@@ -552,4 +586,50 @@ TEST_CASE("event-triggered rules: switch_schedule_table refuses such a table and
 	run(1);
 	REQUIRE(s_frames.size() == 1);
 	CHECK(sent_pid(0) == open_lin_data_layer_parity(0x01));
+}
+
+/* ---- Non-blocking reception: the handler returns while a response is on its way ---- */
+TEST_CASE("a response is collected over several handler calls as its bytes arrive", "[open_lin_master_schedule][rx]")
+{
+	reset_sim();
+	open_lin_master_dl_init(table_rx, TABLE_SIZE(table_rx));
+	s_rx_count = 0;
+	s_on_rx_callback = record_rx;
+
+	open_lin_master_dl_handler();                          /* header of 0x03 goes out, nothing has arrived yet */
+	REQUIRE(s_frames.size() == 1);
+	CHECK(s_rx_count == 0);
+	CHECK(s_errors.empty());
+	CHECK(s_state == OPEN_LIN_MASTER_DATA_RX);
+
+	l_u8 data[1] = {0x5A};
+	s_rx_feed.push_back(data[0]);
+	open_lin_master_dl_handler();                          /* the data byte is in, the checksum is not */
+	CHECK(s_rx_count == 0);
+	CHECK(s_state == OPEN_LIN_MASTER_DATA_RX);
+
+	s_rx_feed.push_back(open_lin_data_layer_checksum(0x03, OPEN_LIN_CHECKSUM_ENHANCED, 1, data));
+	open_lin_master_dl_handler();                          /* complete */
+	CHECK(s_rx_count == 1);
+	CHECK(buf_rx[0] == 0x5A);
+	CHECK(s_errors.empty());
+	CHECK(s_state == OPEN_LIN_MASTER_IDLE);
+}
+
+TEST_CASE("a response that never comes times out only once the slot time is over, and the reception is cancelled", "[open_lin_master_schedule][rx]")
+{
+	reset_sim();
+	open_lin_master_dl_init(table_rx, TABLE_SIZE(table_rx));
+
+	int calls = 0;
+	do {
+		open_lin_master_dl_handler();
+		calls++;
+	} while (s_errors.empty() && (calls < 100000));
+
+	REQUIRE(s_errors.size() == 1);
+	CHECK(s_errors[0] == OPEN_LIN_MASTER_ERROR_FRAME_SLOT_TIMEOUT);
+	CHECK(calls > 10);                 /* the handler returned in between, it did not sit inside the slot */
+	CHECK(s_hw_rx_aborts == 1);        /* the reception that was still pending was cancelled */
+	CHECK(s_state == OPEN_LIN_MASTER_IDLE);
 }

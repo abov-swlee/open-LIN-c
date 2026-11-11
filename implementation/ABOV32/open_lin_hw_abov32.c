@@ -373,3 +373,43 @@ l_u8 open_lin_hw_rx_data(l_u8 *data, l_u8 len, l_u32 timeout_us)
 #endif
     return s_bRxDone ? len : 0;
 }
+
+/* Non-blocking reception of one frame: the HAL's interrupt handler stores the bytes into uffer as they
+ * arrive, nothing is called from this layer in interrupt context. */
+static l_u8 s_rx_len;
+
+void open_lin_hw_rx_start(l_u8 *buffer, l_u8 len)
+{
+    s_rx_len = len;
+    s_bRxDone = false;
+
+#if USART_LIN
+    (void)HAL_USART_AbortRx(USART_ID_1);
+    (void)HAL_USART_Receive(USART_ID_1, buffer, len, false);
+#else
+    (void)HAL_UART_AbortRx(UART_ID_1);
+    (void)HAL_UART_Receive(UART_ID_1, buffer, len, false);
+#endif
+}
+
+l_u8 open_lin_hw_rx_count(void)
+{
+#if USART_LIN
+    /* the USART HAL has no running count: the bytes are only known once the whole frame is in */
+    return s_bRxDone ? s_rx_len : 0u;
+#else
+    uint32_t count = 0u;
+
+    (void)HAL_UART_GetRxCount(UART_ID_1, &count);
+    return (count > s_rx_len) ? s_rx_len : (l_u8)count;
+#endif
+}
+
+void open_lin_hw_rx_abort(void)
+{
+#if USART_LIN
+    (void)HAL_USART_AbortRx(USART_ID_1);
+#else
+    (void)HAL_UART_AbortRx(UART_ID_1);
+#endif
+}
