@@ -55,7 +55,7 @@ static l_u8 s_event_count = 0u;
 static l_bool s_event_garble = l_false;
 
 /* A response is sent in the background: data and checksum are copied into one buffer the hardware sends in one
- * go (open_lin_hw_tx_start), and what has to happen once it is out is done by open_lin_slave_poll(). The
+ * go (open_lin_hw_tx_data), and what has to happen once it is out is done by open_lin_slave_poll(). The
  * receiver stays off while it goes out, so the node does not read its own response. */
 typedef enum
 {
@@ -75,7 +75,7 @@ static l_bool slave_tx_start(const l_u8 *data, l_u8 length, l_u8 checksum)
 {
 	(void)open_lin_memcpy(s_tx_stage, data, length);
 	s_tx_stage[length] = checksum;
-	if (open_lin_hw_tx_start(s_tx_stage, (l_u8)(length + 1u)) == l_false)
+	if (open_lin_hw_tx_data(s_tx_stage, (l_u8)(length + 1u)) == l_false)
 	{
 		return l_false;
 	}

@@ -18,7 +18,7 @@ static void (*lin_master_state_callback)(t_open_lin_master_state);
 static l_u8 master_rx_count = 0;
 
 /* The response being received: the hardware stores its bytes here in the background
- * (open_lin_hw_rx_start) and the handler feeds them to open_lin_master_dl_rx() as they arrive.
+ * (open_lin_hw_rx_data) and the handler feeds them to open_lin_master_dl_rx() as they arrive.
  * One byte more than the longest frame, for the checksum. */
 static l_u8 rx_stage[OPEN_LIN_MAX_FRAME_LENGTH + 1u];
 static l_u8 rx_fed = 0;
@@ -309,7 +309,7 @@ l_bool open_lin_master_data_tx_header(open_lin_frame_slot_t  *slot)
 		tx_stage[length++] = open_lin_data_layer_checksum(slot->pid, slot->checksum_type, slot->data_length, slot->data_ptr);
 
 		result = open_lin_hw_tx_break();
-		result = (open_lin_hw_tx_start(tx_stage, length)) && result;
+		result = (open_lin_hw_tx_data(tx_stage, length)) && result;
 	} else
 	{
 		result = open_lin_hw_tx_break();
@@ -452,7 +452,7 @@ void open_lin_master_dl_handler()
 					open_lin_master_set_state(OPEN_LIN_MASTER_DATA_RX);
 					master_rx_count = 0;
 					rx_fed = 0;
-					open_lin_hw_rx_start(rx_stage, (l_u8)(master_table_item->slot.data_length + 1u)); /* data and checksum */
+					open_lin_hw_rx_data(rx_stage, (l_u8)(master_table_item->slot.data_length + 1u)); /* data and checksum */
 					open_lin_set_rx_enabled(l_true); // Ready for receiving from Slave
 				}
 			} else

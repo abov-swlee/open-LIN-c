@@ -37,7 +37,7 @@ void open_lin_slave_rx_header(l_u8 rx_byte);
 #endif
 
 /**
- * @brief Call it repeatedly. A response to a header is sent in the background (open_lin_hw_tx_start()),
+ * @brief Call it repeatedly. A response to a header is sent in the background (open_lin_hw_tx_data()),
  *        the slave stays in the DATA_TX state meanwhile; once the hardware reports it done (or the
  *        timeout passed) this finishes it - response_error and event-triggered bookkeeping, then back
  *        to IDLE. Does nothing while no response is going out.

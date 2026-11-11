@@ -301,30 +301,6 @@ l_bool open_lin_hw_tx_byte(l_u8 byte)
     return s_bTxDone;
 }
 
-l_u8 open_lin_hw_tx_data(l_u8* data, l_u8 len)
-{
-    HAL_ERR_e eErr;
-    s_bTxDone = false;
-
-#if USART_LIN
-    eErr = HAL_USART_Transmit(USART_ID_1, data, len, false);
-#else
-    eErr = HAL_UART_Transmit(UART_ID_1, data, len, false);
-#endif
-
-    if(eErr == HAL_ERR_OK)
-    {
-        while(!s_bTxDone) ;
-#if defined(PRINT_RAW_DATA)
-        printf(COLOR_PURPLE"[data] ");
-        for(int i = 0 ; i < len ; i++)
-            printf("%02X ", data[i]);
-        printf("\n"COLOR_RESET);
-#endif
-    }
-    return s_bTxDone;
-}
-
 l_bool open_lin_hw_rx_byte(l_u8 *data, l_u32 timeout_us)
 {
     uint32_t start_time_us;
@@ -348,41 +324,27 @@ l_bool open_lin_hw_rx_byte(l_u8 *data, l_u32 timeout_us)
     return s_bRxDone;
 }
 
-l_u8 open_lin_hw_rx_data(l_u8 *data, l_u8 len, l_u32 timeout_us)
-{
-    uint32_t start_time_us;
-
-    s_bRxDone = false;
-    start_time_us = open_lin_hw_get_time_us();
-
-#if USART_LIN
-    HAL_USART_Receive(USART_ID_1, data, len, false);
-#else
-    HAL_UART_Receive(UART_ID_1, data, len, false);
-#endif
-
-    while(!s_bRxDone && (open_lin_hw_get_time_us() - start_time_us <= timeout_us)) ;
-#if defined(PRINT_RAW_DATA)
-    if(s_bRxDone)
-    {
-        printf(COLOR_YELLOW"[data] ");
-        for(int i = 0 ; i < len ; i++)
-            printf("%02X ", data[i]);
-        printf("\n"COLOR_RESET);
-    }
-#endif
-    return s_bRxDone ? len : 0;
-}
-
 /* Non-blocking reception of one frame: the HAL's interrupt handler stores the bytes into uffer as they
  * arrive, nothing is called from this layer in interrupt context. */
 static l_u8 s_rx_len;
+#if defined(PRINT_RAW_DATA)
+/* The bytes of the reception / transmission in progress are printed once, when its done flag has gone true
+ * (the callback of the HAL sets it): printing from the polling functions below, never from the interrupt. */
+static const l_u8 *s_rx_log_buffer;
+static l_bool s_rx_logged = l_true;
+static const l_u8 *s_tx_log_buffer;
+static l_u8 s_tx_log_len;
+static l_bool s_tx_logged = l_true;
+#endif
 
-void open_lin_hw_rx_start(l_u8 *buffer, l_u8 len)
+void open_lin_hw_rx_data(l_u8 *buffer, l_u8 len)
 {
     s_rx_len = len;
     s_bRxDone = false;
-
+#if defined(PRINT_RAW_DATA)
+    s_rx_log_buffer = buffer;
+    s_rx_logged = l_false;
+#endif
 #if USART_LIN
     (void)HAL_USART_AbortRx(USART_ID_1);
     (void)HAL_USART_Receive(USART_ID_1, buffer, len, false);
@@ -393,11 +355,16 @@ void open_lin_hw_rx_start(l_u8 *buffer, l_u8 len)
 }
 
 /* Non-blocking transmission: the HAL's interrupt handler chains the bytes, s_bTxDone is set by its callback. */
-l_bool open_lin_hw_tx_start(const l_u8 *buffer, l_u8 len)
+l_bool open_lin_hw_tx_data(const l_u8 *buffer, l_u8 len)
 {
     HAL_ERR_e eErr;
 
     s_bTxDone = false;
+#if defined(PRINT_RAW_DATA)
+    s_tx_log_buffer = buffer;
+    s_tx_log_len = len;
+    s_tx_logged = l_false;
+#endif
 #if USART_LIN
     eErr = HAL_USART_Transmit(USART_ID_1, (uint8_t *)buffer, len, false);
 #else
@@ -408,11 +375,35 @@ l_bool open_lin_hw_tx_start(const l_u8 *buffer, l_u8 len)
 
 l_bool open_lin_hw_tx_is_done(void)
 {
+#if defined(PRINT_RAW_DATA)
+    if (s_bTxDone && (s_tx_logged == l_false))
+    {
+        s_tx_logged = l_true;
+        printf(COLOR_PURPLE"[tx] ");
+        for (l_u8 i = 0u; i < s_tx_log_len; i++)
+        {
+            printf("%02X ", s_tx_log_buffer[i]);
+        }
+        printf("\n"COLOR_RESET);
+    }
+#endif
     return s_bTxDone ? l_true : l_false;
 }
 
 l_u8 open_lin_hw_rx_count(void)
 {
+#if defined(PRINT_RAW_DATA)
+    if (s_bRxDone && (s_rx_logged == l_false))
+    {
+        s_rx_logged = l_true;
+        printf(COLOR_YELLOW"[rx] ");
+        for (l_u8 i = 0u; i < s_rx_len; i++)
+        {
+            printf("%02X ", s_rx_log_buffer[i]);
+        }
+        printf("\n"COLOR_RESET);
+    }
+#endif
 #if USART_LIN
     uint32_t count = 0u;
 

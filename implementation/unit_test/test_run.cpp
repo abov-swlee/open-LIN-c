@@ -150,7 +150,7 @@ static l_u32 g_time_us = 0u;
 l_u32 open_lin_hw_get_time_us(){ return g_time_us; }
 l_bool open_lin_hw_tx_is_done(void){ return g_tx_hw_done; }
 
-l_bool open_lin_hw_tx_start(const l_u8 *data, l_u8 len){
+l_bool open_lin_hw_tx_data(const l_u8 *data, l_u8 len){
 	if (g_tx_hw_start_ok == l_false)
 	{
 		return l_false;
@@ -456,7 +456,7 @@ TEST_CASE("event frame registry: re-registering replaces, a full table refuses, 
 	open_lin_slave_dl_event_updated(0x05); /* unknown associated frame: nothing happens */
 	CHECK(open_lin_slave_dl_set_event_frame(0x06, 0x05) == l_true);
 }
-/* ---- Response in the background (open_lin_hw_tx_start / open_lin_slave_poll) ---- */
+/* ---- Response in the background (open_lin_hw_tx_data / open_lin_slave_poll) ---- */
 static void send_pid_0x01_and_clean_up(void)
 {
 	/* leaves response_error cleared and the TX stub in its default state for whichever test runs next */
