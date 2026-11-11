@@ -54,6 +54,16 @@ l_u8 open_lin_hw_rx_count(void);
 /** @brief Cancels the reception started with open_lin_hw_rx_start(), without disturbing the bus. */
 void open_lin_hw_rx_abort(void);
 
+/**
+ * @brief Starts sending len bytes and returns at once; the hardware sends them in the background.
+ *        The buffer must stay unchanged until open_lin_hw_tx_is_done() reports true.
+ * @return l_false when the transmission could not be started
+ */
+l_bool open_lin_hw_tx_start(const l_u8 *buffer, l_u8 len);
+
+/** @brief l_true when the transmission started with open_lin_hw_tx_start() has been handed to the line. */
+l_bool open_lin_hw_tx_is_done(void);
+
 #ifdef OPEN_LIN_AUTO_BAUD
 /**
  * @brief Starts auto baud procedure

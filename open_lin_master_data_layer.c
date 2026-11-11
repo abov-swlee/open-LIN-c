@@ -283,26 +283,47 @@ static void event_frame_received(const open_lin_event_trigger_t *event, const l_
 }
 
 
+/* Frame the master sends in one go: sync, PID, data, checksum. A snapshot, so the application may
+ * change its data while the hardware is still sending. */
+static l_u8 tx_stage[OPEN_LIN_MAX_FRAME_LENGTH + 3u];
+
+/* The break is generated synchronously (a bounded busy wait of under a millisecond). A frame the master
+ * publishes is assembled first, so that nothing but the start of the transmission lies between the break and
+ * the sync byte, and then goes out as ONE background transmission. For a frame a slave answers only sync and
+ * PID are sent here, in the foreground, so the reception can be armed the moment the PID is out. */
 l_bool open_lin_master_data_tx_header(open_lin_frame_slot_t  *slot)
 {
-	l_bool result = l_true;
-	result = (open_lin_hw_tx_break()) && result;
-	result = (open_lin_hw_tx_byte(0x55)) && result;
-	result = (open_lin_hw_tx_byte(open_lin_data_layer_parity(slot->pid))) && result;
+	l_bool result;
+
+	if (slot->frame_type == OPEN_LIN_FRAME_TYPE_TRANSMIT)
+	{
+		l_u8 length = 0u;
+		l_u8 i;
+
+		tx_stage[length++] = 0x55;
+		tx_stage[length++] = open_lin_data_layer_parity(slot->pid);
+		for (i = 0u; i < slot->data_length; i++)
+		{
+			tx_stage[length++] = slot->data_ptr[i];
+		}
+		tx_stage[length++] = open_lin_data_layer_checksum(slot->pid, slot->checksum_type, slot->data_length, slot->data_ptr);
+
+		result = open_lin_hw_tx_break();
+		result = (open_lin_hw_tx_start(tx_stage, length)) && result;
+	} else
+	{
+		result = open_lin_hw_tx_break();
+		result = (open_lin_hw_tx_byte(0x55)) && result;
+		result = (open_lin_hw_tx_byte(open_lin_data_layer_parity(slot->pid))) && result;
+	}
 	return result;
 }
 
+/* l_true once the frame started by open_lin_master_data_tx_header() has been sent */
 l_bool open_lin_master_data_tx_data(open_lin_frame_slot_t *slot)
 {
-	l_u8 i = 0;
-	l_bool result = l_true;
-	for (i = 0; i < slot->data_length; i++)
-	{
-		result = (open_lin_hw_tx_byte(slot->data_ptr[i])) && result;
-	}
-
-	result = (open_lin_hw_tx_byte(open_lin_data_layer_checksum(slot->pid, slot->checksum_type, slot->data_length, slot->data_ptr))) && result;
-	return result;
+	(void)slot;
+	return open_lin_hw_tx_is_done();
 }
 
 l_bool open_lin_master_dl_rx(l_u8 rx_byte)
@@ -412,18 +433,19 @@ void open_lin_master_dl_handler()
 			frame_start_time_us = open_lin_hw_get_time_us();
 			frame_slot_us_of_current = master_table_item->frame_slot_us;
 
+#ifdef OPEN_LIN_TRANSPORT_LAYER
+			if ((master_table_item->slot.frame_type == OPEN_LIN_FRAME_TYPE_TRANSMIT) &&
+			    (master_table_item->slot.pid == OPEN_LIN_DIAG_REQUEST))
+			{
+				/* fill slot.data_ptr with the next SF/FF/CF chunk before the header call below
+				 * copies the whole frame into the transmit buffer */
+				open_lin_master_transport_layer_handle_tx(&master_table_item->slot);
+			}
+#endif
 			if (open_lin_master_data_tx_header(&master_table_item->slot) == l_true)
 			{
 				if (master_table_item->slot.frame_type == OPEN_LIN_FRAME_TYPE_TRANSMIT)
 				{
-#ifdef OPEN_LIN_TRANSPORT_LAYER
-					if (master_table_item->slot.pid == OPEN_LIN_DIAG_REQUEST)
-					{
-						/* fill slot.data_ptr with the next SF/FF/CF chunk before
-						 * case OPEN_LIN_MASTER_TX_DATA below actually sends it */
-						open_lin_master_transport_layer_handle_tx(&master_table_item->slot);
-					}
-#endif
 					open_lin_master_set_state(OPEN_LIN_MASTER_TX_DATA);
 				} else
 				{
@@ -491,13 +513,11 @@ void open_lin_master_dl_handler()
 
 			case OPEN_LIN_MASTER_TX_DATA:
 			{
+				/* the background transmission is still running until it reports done; a transmission
+				 * that never ends is caught by the slot timeout above */
 				if (open_lin_master_data_tx_data(&master_table_item->slot) == l_true)
 				{
 					open_lin_master_goto_idle(l_true);
-				} else
-				{
-					open_lin_error_handler(OPEN_LIN_MASTER_ERROR_DATA_TX);
-					open_lin_master_set_state(OPEN_LIN_MASTER_IDLE);
 				}
 				break;
 			}

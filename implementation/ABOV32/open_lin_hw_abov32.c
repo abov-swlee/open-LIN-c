@@ -392,6 +392,25 @@ void open_lin_hw_rx_start(l_u8 *buffer, l_u8 len)
 #endif
 }
 
+/* Non-blocking transmission: the HAL's interrupt handler chains the bytes, s_bTxDone is set by its callback. */
+l_bool open_lin_hw_tx_start(const l_u8 *buffer, l_u8 len)
+{
+    HAL_ERR_e eErr;
+
+    s_bTxDone = false;
+#if USART_LIN
+    eErr = HAL_USART_Transmit(USART_ID_1, (uint8_t *)buffer, len, false);
+#else
+    eErr = HAL_UART_Transmit(UART_ID_1, (uint8_t *)buffer, len, false);
+#endif
+    return (eErr == HAL_ERR_OK) ? l_true : l_false;
+}
+
+l_bool open_lin_hw_tx_is_done(void)
+{
+    return s_bTxDone ? l_true : l_false;
+}
+
 l_u8 open_lin_hw_rx_count(void)
 {
 #if USART_LIN

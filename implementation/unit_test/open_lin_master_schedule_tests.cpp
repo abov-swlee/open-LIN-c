@@ -46,6 +46,9 @@ l_u8 open_lin_hw_rx_count(void)
 	return s_hw_rx_count;
 }
 void open_lin_hw_rx_abort(void) { s_hw_rx_len = 0; s_hw_rx_aborts++; }
+/* a background transmission: its bytes join the frame of the last break, it is done when polled */
+l_bool open_lin_hw_tx_start(const l_u8 *buffer, l_u8 len) { s_frames.back().insert(s_frames.back().end(), buffer, buffer + len); return l_true; }
+l_bool open_lin_hw_tx_is_done(void) { return l_true; }
 void open_lin_master_dl_rx_callback(open_lin_frame_slot_t *slot) { if (s_on_rx_callback) s_on_rx_callback(slot); }
 /* Diagnostic transport layer stand-in: a request of N frames is pending until N 0x3C slots have run,
  * then a response is awaited until a 0x3D slot delivers one. */
