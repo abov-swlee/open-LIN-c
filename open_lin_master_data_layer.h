@@ -42,22 +42,23 @@ l_bool open_lin_master_dl_validate_table(const t_master_frame_table_item *p_tabl
 /**
  * @brief Starts the master on a schedule table. A table that fails
  *        open_lin_master_dl_validate_table() is not run: the master stays silent.
+ * @return l_false if the table was refused (the error was reported too), else l_true.
  */
-void open_lin_master_dl_init(t_master_frame_table_item *p_master_frame_table, l_u8 p_master_frame_table_size);
+l_bool open_lin_master_dl_init(t_master_frame_table_item *p_master_frame_table, l_u8 p_master_frame_table_size);
 
 /**
  * @brief Diagnostic Spec 5.4 (Diagnostics Interleaved Mode): register the diagnostic
- *        master request schedule table (MRF_schedule, one 0x3C TX slot) and the
- *        diagnostic slave response schedule table (SRF_schedule, one 0x3D RX slot).
- *        Once registered, the normal schedule needs no 0x3C/0x3D slots of its own:
- *        when the current normal schedule has run through, the master runs the MRF
- *        table once for each request frame still to be sent, and the SRF table once
- *        for each poll while a response is awaited, with a full normal schedule run
+ *        request schedule table (the spec's MRF_schedule: master request, one 0x3C TX slot)
+ *        and the diagnostic response schedule table (the spec's SRF_schedule: slave response,
+ *        one 0x3D RX slot). Once registered, the normal schedule needs no 0x3C/0x3D slots of
+ *        its own: when the current normal schedule has run through, the master runs the
+ *        request table once for each request frame still to be sent, and the response table
+ *        once for each poll while a response is awaited, with a full normal schedule run
  *        in between each. Without this call the old behavior is unchanged.
  *        An application-requested table switch cancels a diagnostic schedule in progress.
  */
-void open_lin_master_dl_set_diagnostic_tables(t_master_frame_table_item *p_mrf_table, l_u8 p_mrf_size,
-                                              t_master_frame_table_item *p_srf_table, l_u8 p_srf_size);
+void open_lin_master_dl_set_diagnostic_tables(t_master_frame_table_item *p_request_table, l_u8 p_request_size,
+                                              t_master_frame_table_item *p_response_table, l_u8 p_response_size);
 
 /**
  * @brief Request a switch to another schedule table (LDF Schedule_tables).

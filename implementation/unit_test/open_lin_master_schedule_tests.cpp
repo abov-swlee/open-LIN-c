@@ -338,16 +338,16 @@ TEST_CASE("frame slot time follows the table entry of the frame just started", "
 
 /* ---- Diagnostic schedules (Diagnostic Spec 5.4, Diagnostics Interleaved Mode) ---- */
 static l_u8 buf_diag_req[8], buf_diag_resp[8];
-static t_master_frame_table_item mrf_table[] = {
+static t_master_frame_table_item request_table[] = {
 	{100000, {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, buf_diag_req}, NULL},
 };
-static t_master_frame_table_item srf_table[] = {
+static t_master_frame_table_item response_table[] = {
 	{100000, {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, buf_diag_resp}, NULL},
 };
 
 static void register_diag_tables(void)
 {
-	open_lin_master_dl_set_diagnostic_tables(mrf_table, TABLE_SIZE(mrf_table), srf_table, TABLE_SIZE(srf_table));
+	open_lin_master_dl_set_diagnostic_tables(request_table, TABLE_SIZE(request_table), response_table, TABLE_SIZE(response_table));
 }
 
 /* A request of `frames` frames is queued: pending until that many 0x3C slots have run, then a response is awaited */
@@ -375,7 +375,7 @@ static void expect_pids(std::initializer_list<uint8_t> ids)
 	}
 }
 
-TEST_CASE("diagnostic schedules: MRF per request frame, then SRF until the response arrives, each between full normal runs", "[open_lin_master_schedule][diag]")
+TEST_CASE("diagnostic schedules: request schedule per request frame, then response schedule until the response arrives, each between full normal runs", "[open_lin_master_schedule][diag]")
 {
 	reset_sim();
 	register_diag_tables();
@@ -385,14 +385,14 @@ TEST_CASE("diagnostic schedules: MRF per request frame, then SRF until the respo
 	feed_diag_response();
 	run(11);
 	expect_pids({0x01, 0x02,                   /* the running normal schedule finishes first */
-	             0x3C, 0x01, 0x02,             /* MRF, then a normal run */
-	             0x3C, 0x01, 0x02,             /* MRF for the last request frame, normal run */
-	             0x3D, 0x01, 0x02,             /* SRF collects the response, normal run */
+	             0x3C, 0x01, 0x02,             /* request schedule, then a normal run */
+	             0x3C, 0x01, 0x02,             /* request schedule for the last request frame, normal run */
+	             0x3D, 0x01, 0x02,             /* response schedule collects the response, normal run */
 	             0x01});                       /* nothing left to do */
 	CHECK(s_errors.empty());
 }
 
-TEST_CASE("diagnostic schedules: SRF repeats between normal runs while no response comes, until none is expected", "[open_lin_master_schedule][diag]")
+TEST_CASE("diagnostic schedules: response schedule repeats between normal runs while no response comes, until none is expected", "[open_lin_master_schedule][diag]")
 {
 	reset_sim();
 	register_diag_tables();
@@ -425,7 +425,7 @@ TEST_CASE("diagnostic schedules: a table switch requested by the application can
 	register_diag_tables();
 	open_lin_master_dl_init(table_a, TABLE_SIZE(table_a));
 	queue_request(1);
-	run(2);                                    /* 0x01, 0x02: the MRF is now the active table, not yet run */
+	run(2);                                    /* 0x01, 0x02: the request schedule is now the active table, not yet run */
 	open_lin_master_dl_switch_schedule_table(table_b, TABLE_SIZE(table_b));
 	run(3);
 	expect_pids({0x01, 0x02, 0x0A, 0x0B, 0x0C});
@@ -440,7 +440,7 @@ TEST_CASE("diagnostic schedules: a collision on the last entry still lets a wait
 	run(1);                                    /* 0x01 */
 	feed_event_response(0xAA, 0xBB, false);
 	run(1);                                    /* 0x06 collides - and being the last entry, the normal run ends here */
-	run(3);                                    /* 0x04, 0x02, then the MRF instead of 0x01 */
+	run(3);                                    /* 0x04, 0x02, then the request schedule instead of 0x01 */
 	expect_pids({0x01, 0x06, 0x04, 0x02, 0x3C});
 }
 
@@ -480,6 +480,8 @@ static bool event_table_valid(const open_lin_frame_slot_t **candidates, l_u8 cou
 TEST_CASE("event-triggered rules: a table that follows them is accepted", "[open_lin_master_schedule]")
 {
 	CHECK(event_table_valid(cands, 2));
+	reset_sim();
+	CHECK(open_lin_master_dl_init(table_ev, TABLE_SIZE(table_ev)) == l_true); /* and init reports it */
 	CHECK(s_errors.empty());
 }
 
@@ -530,7 +532,7 @@ TEST_CASE("event-triggered rules: init does not run a table that breaks them", "
 		{100000, {0x06, OPEN_LIN_FRAME_TYPE_RECEIVE,  2, buf_ev}, &trigger},
 	};
 	reset_sim();
-	open_lin_master_dl_init(table, TABLE_SIZE(table));
+	CHECK(open_lin_master_dl_init(table, TABLE_SIZE(table)) == l_false);
 	run(3);
 	CHECK(s_frames.empty());
 	REQUIRE(s_errors.size() == 1);

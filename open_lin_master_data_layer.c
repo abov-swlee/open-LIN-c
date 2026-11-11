@@ -28,14 +28,15 @@ static t_master_frame_table_item *resume_table = (t_master_frame_table_item *)0;
 static l_u8 resume_table_size = 0;
 static l_u8 resume_index = 0;
 
-/* Diagnostic Spec 5.4: MRF/SRF schedule tables run between executions of the normal schedule */
-#define DIAG_PHASE_NONE 0u
-#define DIAG_PHASE_MRF  1u
-#define DIAG_PHASE_SRF  2u
-static t_master_frame_table_item *diag_mrf_table = (t_master_frame_table_item *)0;
-static l_u8 diag_mrf_table_size = 0;
-static t_master_frame_table_item *diag_srf_table = (t_master_frame_table_item *)0;
-static l_u8 diag_srf_table_size = 0;
+/* Diagnostic Spec 5.4: the diagnostic request schedule table (MRF) and the diagnostic response
+ * schedule table (SRF) run between executions of the normal schedule */
+#define DIAG_PHASE_NONE     0u
+#define DIAG_PHASE_REQUEST  1u
+#define DIAG_PHASE_RESPONSE 2u
+static t_master_frame_table_item *diag_request_table = (t_master_frame_table_item *)0;
+static l_u8 diag_request_table_size = 0;
+static t_master_frame_table_item *diag_response_table = (t_master_frame_table_item *)0;
+static l_u8 diag_response_table_size = 0;
 static l_u8 diag_phase = DIAG_PHASE_NONE;
 static t_master_frame_table_item *diag_return_table = (t_master_frame_table_item *)0;
 static l_u8 diag_return_table_size = 0;
@@ -125,25 +126,28 @@ l_bool open_lin_master_dl_validate_table(const t_master_frame_table_item *p_tabl
 	return l_true;
 }
 
-void open_lin_master_dl_init(t_master_frame_table_item *p_master_frame_table, l_u8 p_master_frame_table_size)
+l_bool open_lin_master_dl_init(t_master_frame_table_item *p_master_frame_table, l_u8 p_master_frame_table_size)
 {
+	l_bool accepted = open_lin_master_dl_validate_table(p_master_frame_table, p_master_frame_table_size);
+
 	master_frame_table = p_master_frame_table;
 	/* a table that breaks the event-triggered frame rules is not run at all, the master stays silent */
-	master_frame_table_size = (open_lin_master_dl_validate_table(p_master_frame_table, p_master_frame_table_size) == l_true) ? p_master_frame_table_size : 0u;
+	master_frame_table_size = (accepted == l_true) ? p_master_frame_table_size : 0u;
 	pending_table = (t_master_frame_table_item *)0;
 	collision_active = l_false;
 	diag_phase = DIAG_PHASE_NONE;
 	master_table_index = 0;
 	open_lin_master_goto_idle(l_false);
+	return accepted;
 }
 
-void open_lin_master_dl_set_diagnostic_tables(t_master_frame_table_item *p_mrf_table, l_u8 p_mrf_size,
-                                              t_master_frame_table_item *p_srf_table, l_u8 p_srf_size)
+void open_lin_master_dl_set_diagnostic_tables(t_master_frame_table_item *p_request_table, l_u8 p_request_size,
+                                              t_master_frame_table_item *p_response_table, l_u8 p_response_size)
 {
-	diag_mrf_table = p_mrf_table;
-	diag_mrf_table_size = p_mrf_size;
-	diag_srf_table = p_srf_table;
-	diag_srf_table_size = p_srf_size;
+	diag_request_table = p_request_table;
+	diag_request_table_size = p_request_size;
+	diag_response_table = p_response_table;
+	diag_response_table_size = p_response_size;
 }
 
 l_bool open_lin_master_dl_switch_schedule_table(t_master_frame_table_item *p_table, l_u8 p_size)
@@ -163,7 +167,7 @@ static t_master_frame_table_item* get_current_item(void)
 }
 
 /* Diagnostic Spec 5.4.3.1: the normal schedule has just run through - if a request frame is waiting
- * to go out, run the MRF table once; else if a response is awaited, run the SRF table once. */
+ * to go out, run the request table once; else if a response is awaited, run the response table once. */
 static void start_diagnostic_schedule_if_needed(void)
 {
 #ifdef OPEN_LIN_TRANSPORT_LAYER
@@ -171,17 +175,17 @@ static void start_diagnostic_schedule_if_needed(void)
 	l_u8 size = 0u;
 	l_u8 phase = DIAG_PHASE_NONE;
 
-	if ((diag_mrf_table != (t_master_frame_table_item *)0) && (diag_mrf_table_size > 0u) && (open_lin_master_diag_tx_pending() == l_true))
+	if ((diag_request_table != (t_master_frame_table_item *)0) && (diag_request_table_size > 0u) && (open_lin_master_diag_tx_pending() == l_true))
 	{
-		table = diag_mrf_table;
-		size = diag_mrf_table_size;
-		phase = DIAG_PHASE_MRF;
-	} else if ((diag_srf_table != (t_master_frame_table_item *)0) && (diag_srf_table_size > 0u) &&
+		table = diag_request_table;
+		size = diag_request_table_size;
+		phase = DIAG_PHASE_REQUEST;
+	} else if ((diag_response_table != (t_master_frame_table_item *)0) && (diag_response_table_size > 0u) &&
 	           (open_lin_master_diag_response_expected(open_lin_hw_get_time_us()) == l_true))
 	{
-		table = diag_srf_table;
-		size = diag_srf_table_size;
-		phase = DIAG_PHASE_SRF;
+		table = diag_response_table;
+		size = diag_response_table_size;
+		phase = DIAG_PHASE_RESPONSE;
 	}
 
 	if (phase != DIAG_PHASE_NONE)
