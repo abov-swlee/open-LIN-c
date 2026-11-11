@@ -38,16 +38,7 @@ extern void open_lin_master_sleep_sent_callback(void);
  * generic table) - 0x11 mirrors the common UDS "service not supported" code. */
 #define OPEN_LIN_ERR_SERVICE_NOT_SUPPORTED 0x11u
 #define OPEN_LIN_ERR_IDENTIFIER_NOT_SUPPORTED 0x12u /* Section 4.2.6.1 example */
-
-/**
- * @brief Outcome of a SID handler, drives what open_lin_transport_layer_dispatch()
- *        sends back on 0x3D.
- */
-typedef enum {
-	OPEN_LIN_SID_RESULT_NO_RESPONSE = 0, /**< request not addressed to this node (id/NAD mismatch) - stay silent */
-	OPEN_LIN_SID_RESULT_POSITIVE,        /**< resp_data[0..*resp_len) valid, respond RSID = SID + 0x40 */
-	OPEN_LIN_SID_RESULT_NEGATIVE         /**< respond 0x7F, SID, *error_code, per Table 4.21 */
-} t_open_lin_sid_result;
+#define OPEN_LIN_ERR_RESPONSE_TOO_LONG 0x14u /* UDS: the application's response does not fit the message buffer */
 
 typedef t_open_lin_sid_result (*t_open_lin_sid_handler_fn)(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code);
 
@@ -64,6 +55,14 @@ static t_open_lin_sid_result open_lin_read_by_id_handler(const l_u8 *data, l_u8 
 static t_open_lin_sid_result open_lin_assign_frame_id_range_handler(const l_u8 *data, l_u8 *resp_data, l_u8 *resp_len, l_u8 *error_code);
 static l_bool open_lin_id_match(uint16_t val, uint16_t expected, uint16_t wildcard);
 static l_bool open_lin_is_go_to_sleep_frame(const l_u8 *frame8);
+
+/* the application's own services, see open_lin_transport_layer_set_user_service() */
+static open_lin_user_service_fn s_user_service = (open_lin_user_service_fn)0;
+
+void open_lin_transport_layer_set_user_service(open_lin_user_service_fn fn)
+{
+	s_user_service = fn;
+}
 
 /* static service handlers */
 t_open_lin_sid_handler_item open_lin_sid_handlers[] = {
@@ -366,8 +365,38 @@ static void open_lin_transport_layer_dispatch(const l_u8 *msg, l_u16 len, open_l
 		}
 	}
 
-	/* SID not in open_lin_sid_handlers[]: negative response, Table 4.21 */
+	if (requester_nad != open_lin_NAD)
+	{
+		return; /* a service this node does not have, asked of everybody: stay silent, or all nodes would answer at once */
+	}
+
 	s_tp_response_nad = requester_nad;
+
+	if (s_user_service != (open_lin_user_service_fn)0)
+	{
+		/* the application's own service: it writes the data behind the RSID straight into the response buffer */
+		l_u16 response_length = (l_u16)(OPEN_LIN_TP_MAX_MSG_LEN - 1u);
+		l_u8 nrc = 0u;
+		t_open_lin_sid_result result = s_user_service(msg[0], &msg[1], (l_u16)(len - 1u), &s_tp_response_buf[1], &response_length, &nrc);
+
+		if ((result == OPEN_LIN_SID_RESULT_POSITIVE) && (response_length <= (l_u16)(OPEN_LIN_TP_MAX_MSG_LEN - 1u)))
+		{
+			s_tp_response_buf[0] = (l_u8)(msg[0] + 0x40u); /* RSID, Section 4.2.3.5 */
+			open_lin_tp_tx_start(&s_tp_tx_ctx, s_tp_response_buf, (l_u16)(response_length + 1u));
+		} else if (result != OPEN_LIN_SID_RESULT_NO_RESPONSE)
+		{
+			s_tp_response_buf[0] = 0x7Fu;
+			s_tp_response_buf[1] = msg[0];
+			s_tp_response_buf[2] = (result == OPEN_LIN_SID_RESULT_NEGATIVE) ? nrc : (l_u8)OPEN_LIN_ERR_RESPONSE_TOO_LONG;
+			open_lin_tp_tx_start(&s_tp_tx_ctx, s_tp_response_buf, 3u);
+		}
+
+		defer_response_if_debug(msg[0]);
+		open_lin_sid_callback((open_lin_SID_t)msg[0]);
+		return;
+	}
+
+	/* SID not in open_lin_sid_handlers[]: negative response, Table 4.21 */
 	s_tp_response_buf[0] = 0x7Fu;
 	s_tp_response_buf[1] = msg[0];
 	s_tp_response_buf[2] = OPEN_LIN_ERR_SERVICE_NOT_SUPPORTED;

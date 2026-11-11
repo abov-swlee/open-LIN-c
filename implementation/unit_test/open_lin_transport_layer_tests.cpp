@@ -907,3 +907,173 @@ TEST_CASE("slave P2max: a real response that waits past P2* after a response pen
 	CHECK(resp[0] == 0xFF);
 	CHECK(s_last_error == OPEN_LIN_SLAVE_ERROR_RESPONSE_DISCARDED);
 }
+
+/* ---- The application's own services (0x22 / 0x2E style), open_lin_transport_layer_set_user_service() ---- */
+static int s_user_service_calls = 0;
+static l_u8 s_user_service_sid = 0;
+static l_u8 s_user_service_request[16];
+static l_u16 s_user_service_request_length = 0;
+static t_open_lin_sid_result s_user_service_result = OPEN_LIN_SID_RESULT_NO_RESPONSE;
+static l_u16 s_user_service_response_length = 0;
+static l_u8 s_user_service_nrc = 0;
+
+static t_open_lin_sid_result test_user_service(l_u8 sid, const l_u8 *request, l_u16 request_length, l_u8 *response, l_u16 *response_length, l_u8 *nrc)
+{
+	s_user_service_calls++;
+	s_user_service_sid = sid;
+	s_user_service_request_length = request_length;
+	for (l_u16 i = 0; (i < request_length) && (i < sizeof(s_user_service_request)); i++)
+	{
+		s_user_service_request[i] = request[i];
+	}
+	for (l_u16 i = 0; (i < s_user_service_response_length) && (i < *response_length); i++)
+	{
+		response[i] = (l_u8)(0xA0 + i);
+	}
+	*response_length = s_user_service_response_length;
+	*nrc = s_user_service_nrc;
+	return s_user_service_result;
+}
+
+static void user_service_setup(t_open_lin_sid_result result, l_u16 response_length, l_u8 nrc)
+{
+	open_lin_NAD = 0x01;
+	s_user_service_calls = 0;
+	s_user_service_result = result;
+	s_user_service_response_length = response_length;
+	s_user_service_nrc = nrc;
+	open_lin_transport_layer_set_user_service(test_user_service);
+}
+
+TEST_CASE("user service: a request for an unknown SID reaches the application and a short answer is a single frame", "[open_lin_transport_layer][tp][user]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
+
+	uint8_t req[8] = {0x01, 0x03, 0x22, 0xF1, 0x01, 0xFF, 0xFF, 0xFF}; /* Read Data By Identifier, DID 0xF101 */
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	CHECK(s_user_service_calls == 1);
+	CHECK(s_user_service_sid == 0x22);
+	REQUIRE(s_user_service_request_length == 2u); /* the data after the SID */
+	CHECK(s_user_service_request[0] == 0xF1);
+	CHECK(s_user_service_request[1] == 0x01);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[0] == 0x01);
+	CHECK((resp[1] >> 4) == OPEN_LIN_PCI_SF);
+	CHECK((resp[1] & 0x0F) == 4); /* RSID + 3 data bytes */
+	CHECK(resp[2] == 0x62);       /* RSID = SID(0x22) + 0x40 */
+	CHECK(resp[3] == 0xA0);
+	CHECK(resp[4] == 0xA1);
+	CHECK(resp[5] == 0xA2);
+	open_lin_transport_layer_set_user_service(0);
+}
+
+TEST_CASE("user service: an answer longer than a single frame goes out as FF + CF", "[open_lin_transport_layer][tp][user]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 10u, 0u);
+
+	uint8_t req[8] = {0x01, 0x03, 0x22, 0xF1, 0x00, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK((resp[1] >> 4) == OPEN_LIN_PCI_FF);
+	CHECK(resp[2] == 11); /* RSID + 10 data bytes */
+	CHECK(resp[3] == 0x62);
+	CHECK(resp[4] == 0xA0);
+
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK((resp[1] >> 4) == OPEN_LIN_PCI_CF);
+	CHECK(resp[2] == 0xA4); /* the 5th data byte follows the FF's RSID + 4 */
+	open_lin_transport_layer_set_user_service(0);
+}
+
+TEST_CASE("user service: a negative result carries the application's NRC", "[open_lin_transport_layer][tp][user]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_NEGATIVE, 0u, 0x31);
+
+	uint8_t req[8] = {0x01, 0x03, 0x22, 0x12, 0x34, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK((resp[1] & 0x0F) == 3);
+	CHECK(resp[2] == 0x7F);
+	CHECK(resp[3] == 0x22);
+	CHECK(resp[4] == 0x31);
+	open_lin_transport_layer_set_user_service(0);
+}
+
+TEST_CASE("user service: no response from the application keeps the node silent", "[open_lin_transport_layer][tp][user]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_NO_RESPONSE, 0u, 0u);
+
+	uint8_t req[8] = {0x01, 0x03, 0x2E, 0xF1, 0x00, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+	CHECK(s_user_service_calls == 1);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	for (int i = 0; i < 8; i++) {
+		CHECK(resp[i] == 0xFF);
+	}
+	open_lin_transport_layer_set_user_service(0);
+}
+
+TEST_CASE("user service: an answer that does not fit the message buffer becomes a negative response", "[open_lin_transport_layer][tp][user]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 200u, 0u);
+
+	uint8_t req[8] = {0x01, 0x03, 0x22, 0xF1, 0x00, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[2] == 0x7F);
+	CHECK(resp[3] == 0x22);
+	CHECK(resp[4] == 0x14); /* response too long */
+	open_lin_transport_layer_set_user_service(0);
+}
+
+TEST_CASE("user service: broadcast and functional requests are not handed over and not answered", "[open_lin_transport_layer][tp][user]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
+
+	uint8_t req[8] = {OPEN_LIN_NAD_BROADCAST, 0x03, 0x22, 0xF1, 0x01, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+	req[0] = OPEN_LIN_NAD_FUNCTIONAL;
+	open_lin_transport_layer_handle(&req_slot);
+	CHECK(s_user_service_calls == 0);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	for (int i = 0; i < 8; i++) {
+		CHECK(resp[i] == 0xFF); /* everybody answering "service not supported" at once would collide */
+	}
+	open_lin_transport_layer_set_user_service(0);
+}
+
+TEST_CASE("user service: a service the library handles itself is not handed over", "[open_lin_transport_layer][tp][user]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
+	open_lin_supplier_id = 0x1234;
+	open_lin_function_id = 0x5678;
+
+	uint8_t req[8] = {0x01, 0x06, 0xB2, 0x00, 0x34, 0x12, 0x78, 0x56}; /* Read By Identifier id=0 */
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+	CHECK(s_user_service_calls == 0);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[2] == 0xF2);
+	open_lin_transport_layer_set_user_service(0);
+}

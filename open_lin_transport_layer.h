@@ -126,6 +126,33 @@ void open_lin_transport_layer_poll(l_u32 now_us);
  */
 void open_lin_transport_layer_debug_response_pending(l_u32 delay_us);
 
+/**
+ * @brief Outcome of a service handler, drives what the transport layer sends back on 0x3D.
+ */
+typedef enum {
+	OPEN_LIN_SID_RESULT_NO_RESPONSE = 0, /**< stay silent (e.g. the request is not for this node) */
+	OPEN_LIN_SID_RESULT_POSITIVE,        /**< response data is valid, respond RSID = SID + 0x40 followed by it */
+	OPEN_LIN_SID_RESULT_NEGATIVE         /**< respond 0x7F, SID, NRC, per Table 4.21 */
+} t_open_lin_sid_result;
+
+/**
+ * @brief Service the application handles itself (UDS-style services such as 0x22 Read Data By Identifier or
+ *        0x2E Write Data By Identifier): called for every request whose SID the library has no handler for, when
+ *        the request is addressed to this node's own NAD (not the broadcast or functional NAD).
+ * @param[in]     sid             the request's service id
+ * @param[in]     request         the data after the SID
+ * @param[in]     request_length  length of request
+ * @param[out]    response        where to write the data that follows the RSID of a positive response
+ * @param[in,out] response_length in: the room in response, out: how many bytes were written
+ * @param[out]    nrc             the negative response code when the result is NEGATIVE
+ * @note Runs in the context that feeds the library its frames and has to be done well within P2max.
+ *       The library adds the RSID (SID + 0x40) or the 0x7F, SID, NRC of a negative response itself.
+ */
+typedef t_open_lin_sid_result (*open_lin_user_service_fn)(l_u8 sid, const l_u8 *request, l_u16 request_length,
+														 l_u8 *response, l_u16 *response_length, l_u8 *nrc);
+
+/** @brief Registers the application's service handler (NULL removes it). Built-in services are never handed over. */
+void open_lin_transport_layer_set_user_service(open_lin_user_service_fn fn);
 /** @brief N_Cr supervision for the master's response-reassembly session - see open_lin_transport_layer_poll(). */
 void open_lin_master_transport_layer_poll(l_u32 now_us);
 
