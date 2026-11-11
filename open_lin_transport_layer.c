@@ -632,6 +632,20 @@ void open_lin_transport_layer_handle(open_lin_frame_slot_t *slot)
 		return; /* Diagnostic Spec 5.5: a functional request is ignored while a physical response is pending or going out */
 	}
 
+	if (slot->data_ptr[0] != OPEN_LIN_NAD_FUNCTIONAL)
+	{
+		/* Section 3.2.2, Diagnostic Spec 5.5: any other master request frame ends what was going on. A response that
+		 * was pending or going out is discarded (the master has moved on), and a request for another node also
+		 * stops a reception in progress; only a request for this node (or the broadcast NAD) starts a new one. */
+		s_tp_tx_ctx.active = l_false;
+		s_debug_final_len = 0u;
+		if ((slot->data_ptr[0] != open_lin_NAD) && (slot->data_ptr[0] != OPEN_LIN_NAD_BROADCAST))
+		{
+			open_lin_tp_rx_init(&s_tp_rx_ctx);
+			return;
+		}
+	}
+
 	if (open_lin_tp_rx_feed(&s_tp_rx_ctx, slot->data_ptr, open_lin_NAD, open_lin_hw_get_time_us()) == l_true)
 	{
 		open_lin_transport_layer_dispatch(s_tp_rx_ctx.buffer, s_tp_rx_ctx.received_len, slot->data_ptr[0]);

@@ -1161,6 +1161,108 @@ TEST_CASE("addressing: a functional request is ignored while a physical response
 	CHECK(resp[2] == 0x62); /* the physical response is untouched */
 	open_lin_transport_layer_set_user_service(0);
 }
+/* ---- Slave transmission handler, Diagnostic Spec 5.5 / Transport Layer 3.2.2: another request ends what was going on ---- */
+static void expect_idle_response(void)
+{
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	for (int i = 0; i < 8; i++) {
+		CHECK(resp[i] == 0xFF);
+	}
+}
+
+TEST_CASE("handler: a request for another node stops a reception in progress", "[open_lin_transport_layer][tp][user][handler]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
+
+	uint8_t ff[8]    = {0x01, 0x10, 0x0A, 0x22, 0xF1, 0x00, 0x11, 0x22}; /* for this node, 10 bytes */
+	uint8_t other[8] = {0x02, 0x03, 0x22, 0xF1, 0x01, 0xFF, 0xFF, 0xFF}; /* for another node */
+	uint8_t cf[8]    = {0x01, 0x21, 0x33, 0x44, 0x55, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, ff};
+	open_lin_transport_layer_handle(&slot);
+	slot.data_ptr = other;
+	open_lin_transport_layer_handle(&slot);
+	slot.data_ptr = cf;
+	open_lin_transport_layer_handle(&slot);
+	CHECK(s_user_service_calls == 0); /* the message was dropped, the late CF completes nothing */
+	open_lin_transport_layer_set_user_service(0);
+}
+
+TEST_CASE("handler: a Consecutive Frame for another node also stops a reception in progress", "[open_lin_transport_layer][tp][user][handler]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
+
+	uint8_t ff[8]       = {0x01, 0x10, 0x0A, 0x22, 0xF1, 0x00, 0x11, 0x22};
+	uint8_t other_cf[8] = {0x02, 0x21, 0x99, 0x99, 0x99, 0xFF, 0xFF, 0xFF};
+	uint8_t cf[8]       = {0x01, 0x21, 0x33, 0x44, 0x55, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, ff};
+	open_lin_transport_layer_handle(&slot);
+	slot.data_ptr = other_cf;
+	open_lin_transport_layer_handle(&slot);
+	slot.data_ptr = cf;
+	open_lin_transport_layer_handle(&slot);
+	CHECK(s_user_service_calls == 0);
+	open_lin_transport_layer_set_user_service(0);
+}
+
+TEST_CASE("handler: a request for another node discards a response that is pending", "[open_lin_transport_layer][tp][user][handler]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
+
+	uint8_t physical[8] = {0x01, 0x03, 0x22, 0xF1, 0x01, 0xFF, 0xFF, 0xFF};
+	uint8_t other[8]    = {0x02, 0x03, 0x22, 0xF1, 0x01, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, physical};
+	open_lin_transport_layer_handle(&slot);
+	slot.data_ptr = other;
+	open_lin_transport_layer_handle(&slot);
+	CHECK(s_user_service_calls == 1); /* the other node's request is not ours */
+	expect_idle_response();
+	open_lin_transport_layer_set_user_service(0);
+}
+
+TEST_CASE("handler: a new request for this node discards the response of the previous one at once", "[open_lin_transport_layer][tp][user][handler]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
+
+	uint8_t first[8] = {0x01, 0x03, 0x22, 0xF1, 0x01, 0xFF, 0xFF, 0xFF};
+	uint8_t ff[8]    = {0x01, 0x10, 0x0A, 0x22, 0xF1, 0x00, 0x11, 0x22}; /* a long new request, not complete yet */
+	open_lin_frame_slot_t slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, first};
+	open_lin_transport_layer_handle(&slot);
+	slot.data_ptr = ff;
+	open_lin_transport_layer_handle(&slot);
+	CHECK(s_user_service_calls == 1);
+	expect_idle_response(); /* the old response is gone although the new request has not been answered yet */
+	open_lin_transport_layer_set_user_service(0);
+}
+
+TEST_CASE("handler: a broadcast request also discards the previous response", "[open_lin_transport_layer][tp][user][handler]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
+
+	uint8_t first[8]     = {0x01, 0x03, 0x22, 0xF1, 0x01, 0xFF, 0xFF, 0xFF};
+	uint8_t broadcast[8] = {OPEN_LIN_NAD_BROADCAST, 0x10, 0x0A, 0x22, 0xF1, 0x00, 0x11, 0x22};
+	open_lin_frame_slot_t slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, first};
+	open_lin_transport_layer_handle(&slot);
+	slot.data_ptr = broadcast;
+	open_lin_transport_layer_handle(&slot);
+	expect_idle_response();
+	open_lin_transport_layer_set_user_service(0);
+}
+
+TEST_CASE("handler: a response being sent in several frames stops when a request for another node arrives", "[open_lin_transport_layer][tp][user][handler]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 10u, 0u); /* FF + CF response */
+
+	uint8_t physical[8] = {0x01, 0x03, 0x22, 0xF1, 0x00, 0xFF, 0xFF, 0xFF};
+	uint8_t other[8]    = {0x02, 0x03, 0x22, 0xF1, 0x01, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, physical};
+	open_lin_transport_layer_handle(&slot);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK((resp[1] >> 4) == OPEN_LIN_PCI_FF); /* the first frame went out */
+
+	slot.data_ptr = other;
+	open_lin_transport_layer_handle(&slot);
+	expect_idle_response(); /* the rest of the response is dropped */
+	open_lin_transport_layer_set_user_service(0);
+}
 TEST_CASE("user service: a service the library handles itself is not handed over", "[open_lin_transport_layer][tp][user]") {
 	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
 	open_lin_supplier_id = 0x1234;
