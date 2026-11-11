@@ -1042,25 +1042,125 @@ TEST_CASE("user service: an answer that does not fit the message buffer becomes 
 	open_lin_transport_layer_set_user_service(0);
 }
 
-TEST_CASE("user service: broadcast and functional requests are not handed over and not answered", "[open_lin_transport_layer][tp][user]") {
+TEST_CASE("addressing: a broadcast request is handled like one for the node's own NAD, answer included", "[open_lin_transport_layer][tp][user][addressing]") {
 	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
 
 	uint8_t req[8] = {OPEN_LIN_NAD_BROADCAST, 0x03, 0x22, 0xF1, 0x01, 0xFF, 0xFF, 0xFF};
 	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
 	open_lin_transport_layer_handle(&req_slot);
-	req[0] = OPEN_LIN_NAD_FUNCTIONAL;
+	CHECK(s_user_service_calls == 1);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[0] == OPEN_LIN_NAD_BROADCAST); /* Table 4.8: the response echoes the request's NAD */
+	CHECK(resp[2] == 0x62);
+	open_lin_transport_layer_set_user_service(0);
+}
+
+TEST_CASE("addressing: a broadcast request for an unknown SID gets the negative response like a physical one", "[open_lin_transport_layer][tp][addressing]") {
+	open_lin_NAD = 0x01;
+	open_lin_transport_layer_set_user_service(0);
+
+	uint8_t req[8] = {OPEN_LIN_NAD_BROADCAST, 0x01, 0xB6, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
 	open_lin_transport_layer_handle(&req_slot);
-	CHECK(s_user_service_calls == 0);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[2] == 0x7F);
+	CHECK(resp[3] == 0xB6);
+	CHECK(resp[4] == 0x11);
+}
+
+TEST_CASE("addressing: a functional request is processed but never answered", "[open_lin_transport_layer][tp][user][addressing]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
+
+	uint8_t req[8] = {OPEN_LIN_NAD_FUNCTIONAL, 0x03, 0x2E, 0xF1, 0x00, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+	CHECK(s_user_service_calls == 1); /* the application saw it ... */
 
 	uint8_t resp[8];
 	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
 	open_lin_transport_layer_handle_tx(&resp_slot);
 	for (int i = 0; i < 8; i++) {
-		CHECK(resp[i] == 0xFF); /* everybody answering "service not supported" at once would collide */
+		CHECK(resp[i] == 0xFF); /* ... but whatever it returned is discarded */
 	}
 	open_lin_transport_layer_set_user_service(0);
 }
 
+TEST_CASE("addressing: a functional request to a built-in service is processed and its response discarded", "[open_lin_transport_layer][tp][addressing]") {
+	open_lin_NAD = 0x01;
+	open_lin_supplier_id = 0x1234;
+	open_lin_function_id = 0x5678;
+	open_lin_transport_layer_set_user_service(0);
+
+	uint8_t req[8] = {OPEN_LIN_NAD_FUNCTIONAL, 0x06, 0xB0, 0x34, 0x12, 0x78, 0x56, 0x44}; /* Assign NAD, new NAD 0x44 */
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+	CHECK(open_lin_NAD == 0x44); /* processed */
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	for (int i = 0; i < 8; i++) {
+		CHECK(resp[i] == 0xFF);
+	}
+	open_lin_NAD = 0x01;
+}
+
+TEST_CASE("addressing: a functional First Frame is ignored, functional messages are single frames only", "[open_lin_transport_layer][tp][user][addressing]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
+
+	uint8_t ff[8] = {OPEN_LIN_NAD_FUNCTIONAL, 0x10, 0x0A, 0x22, 0xF1, 0x00, 0x11, 0x22};
+	uint8_t cf[8] = {OPEN_LIN_NAD_FUNCTIONAL, 0x21, 0x33, 0x44, 0x55, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, ff};
+	open_lin_transport_layer_handle(&slot);
+	slot.data_ptr = cf;
+	open_lin_transport_layer_handle(&slot);
+	CHECK(s_user_service_calls == 0);
+	open_lin_transport_layer_set_user_service(0);
+}
+
+TEST_CASE("addressing: a functional request in the middle of a physical reception is ignored and does not abort it", "[open_lin_transport_layer][tp][user][addressing]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
+
+	uint8_t ff[8] = {0x01, 0x10, 0x0A, 0x22, 0xF1, 0x00, 0x11, 0x22}; /* physical First Frame, 10 bytes */
+	uint8_t functional[8] = {OPEN_LIN_NAD_FUNCTIONAL, 0x03, 0x2E, 0xF1, 0x00, 0xFF, 0xFF, 0xFF};
+	uint8_t cf[8] = {0x01, 0x21, 0x33, 0x44, 0x55, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, ff};
+	open_lin_transport_layer_handle(&slot);
+	slot.data_ptr = functional;
+	open_lin_transport_layer_handle(&slot);
+	CHECK(s_user_service_calls == 0); /* ignored */
+	slot.data_ptr = cf;
+	open_lin_transport_layer_handle(&slot);
+	CHECK(s_user_service_calls == 1); /* the physical message still completed */
+	CHECK(s_user_service_sid == 0x22);
+	open_lin_transport_layer_set_user_service(0);
+}
+
+TEST_CASE("addressing: a functional request is ignored while a physical response is pending", "[open_lin_transport_layer][tp][user][addressing]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
+
+	uint8_t physical[8] = {0x01, 0x03, 0x22, 0xF1, 0x01, 0xFF, 0xFF, 0xFF};
+	uint8_t functional[8] = {OPEN_LIN_NAD_FUNCTIONAL, 0x03, 0x2E, 0xF1, 0x00, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, physical};
+	open_lin_transport_layer_handle(&slot);
+	CHECK(s_user_service_calls == 1); /* the response to it is now pending */
+
+	slot.data_ptr = functional;
+	open_lin_transport_layer_handle(&slot);
+	CHECK(s_user_service_calls == 1); /* Diagnostic Spec 5.5: ignored, not processed */
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	open_lin_transport_layer_handle_tx(&resp_slot);
+	CHECK(resp[2] == 0x62); /* the physical response is untouched */
+	open_lin_transport_layer_set_user_service(0);
+}
 TEST_CASE("user service: a service the library handles itself is not handed over", "[open_lin_transport_layer][tp][user]") {
 	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
 	open_lin_supplier_id = 0x1234;

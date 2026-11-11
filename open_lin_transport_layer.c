@@ -302,6 +302,15 @@ static void defer_response_if_debug(l_u8 sid)
 	open_lin_tp_tx_start(&s_tp_tx_ctx, s_tp_response_buf, 3u);
 }
 
+/* Queues the response held in s_tp_response_buf, unless the request was functionally addressed */
+static void send_response(l_u16 length, l_bool functional)
+{
+	if (functional == l_false)
+	{
+		open_lin_tp_tx_start(&s_tp_tx_ctx, s_tp_response_buf, length);
+	}
+}
+
 /**
  * @brief Dispatch one fully reassembled node-configuration message (SF, or
  *        FF+CF concatenated) to its SID handler.
@@ -312,6 +321,7 @@ static void defer_response_if_debug(l_u8 sid)
 static void open_lin_transport_layer_dispatch(const l_u8 *msg, l_u16 len, open_lin_NAD_t requester_nad)
 {
 	uint8_t i = 0;
+	l_bool functional;
 
 	if (len < 1u)
 	{
@@ -324,6 +334,11 @@ static void open_lin_transport_layer_dispatch(const l_u8 *msg, l_u16 len, open_l
 	{
 		return; /* different NAD, not addressed to this node */
 	}
+
+	/* Diagnostic Spec 5.5: a functional request (NAD 0x7E) is processed like any other, but its response data
+	 * is discarded - every addressed node answering at once would only collide. The broadcast NAD (0x7F) is
+	 * treated as the node's own NAD, answer included. */
+	functional = (requester_nad == OPEN_LIN_NAD_FUNCTIONAL) ? l_true : l_false;
 
 	s_tp_response_ready_us = open_lin_hw_get_time_us(); /* the request is complete: P2max starts here */
 	s_tp_response_window_us = OPEN_LIN_MASTER_DIAG_P2_MAX_US;
@@ -344,14 +359,14 @@ static void open_lin_transport_layer_dispatch(const l_u8 *msg, l_u16 len, open_l
 				case OPEN_LIN_SID_RESULT_POSITIVE:
 					s_tp_response_buf[0] = (l_u8)(msg[0] + 0x40u); /* RSID, Section 4.2.3.5 */
 					(void)open_lin_memcpy(&s_tp_response_buf[1], resp_data, resp_len);
-					open_lin_tp_tx_start(&s_tp_tx_ctx, s_tp_response_buf, (l_u16)(resp_len + 1u));
+					send_response((l_u16)(resp_len + 1u), functional);
 					break;
 
 				case OPEN_LIN_SID_RESULT_NEGATIVE:
 					s_tp_response_buf[0] = 0x7Fu;
 					s_tp_response_buf[1] = msg[0];
 					s_tp_response_buf[2] = error_code;
-					open_lin_tp_tx_start(&s_tp_tx_ctx, s_tp_response_buf, 3u);
+					send_response(3u, functional);
 					break;
 
 				case OPEN_LIN_SID_RESULT_NO_RESPONSE:
@@ -363,11 +378,6 @@ static void open_lin_transport_layer_dispatch(const l_u8 *msg, l_u16 len, open_l
 			open_lin_sid_callback((open_lin_SID_t)msg[0]);
 			return;
 		}
-	}
-
-	if (requester_nad != open_lin_NAD)
-	{
-		return; /* a service this node does not have, asked of everybody: stay silent, or all nodes would answer at once */
 	}
 
 	s_tp_response_nad = requester_nad;
@@ -382,13 +392,13 @@ static void open_lin_transport_layer_dispatch(const l_u8 *msg, l_u16 len, open_l
 		if ((result == OPEN_LIN_SID_RESULT_POSITIVE) && (response_length <= (l_u16)(OPEN_LIN_TP_MAX_MSG_LEN - 1u)))
 		{
 			s_tp_response_buf[0] = (l_u8)(msg[0] + 0x40u); /* RSID, Section 4.2.3.5 */
-			open_lin_tp_tx_start(&s_tp_tx_ctx, s_tp_response_buf, (l_u16)(response_length + 1u));
+			send_response((l_u16)(response_length + 1u), functional);
 		} else if (result != OPEN_LIN_SID_RESULT_NO_RESPONSE)
 		{
 			s_tp_response_buf[0] = 0x7Fu;
 			s_tp_response_buf[1] = msg[0];
 			s_tp_response_buf[2] = (result == OPEN_LIN_SID_RESULT_NEGATIVE) ? nrc : (l_u8)OPEN_LIN_ERR_RESPONSE_TOO_LONG;
-			open_lin_tp_tx_start(&s_tp_tx_ctx, s_tp_response_buf, 3u);
+			send_response(3u, functional);
 		}
 
 		defer_response_if_debug(msg[0]);
@@ -400,9 +410,8 @@ static void open_lin_transport_layer_dispatch(const l_u8 *msg, l_u16 len, open_l
 	s_tp_response_buf[0] = 0x7Fu;
 	s_tp_response_buf[1] = msg[0];
 	s_tp_response_buf[2] = OPEN_LIN_ERR_SERVICE_NOT_SUPPORTED;
-	open_lin_tp_tx_start(&s_tp_tx_ctx, s_tp_response_buf, 3u);
+	send_response(3u, functional);
 }
-
 void open_lin_tp_rx_init(t_open_lin_tp_rx_ctx *ctx)
 {
 	ctx->active = l_false;
@@ -421,6 +430,13 @@ l_bool open_lin_tp_rx_feed(t_open_lin_tp_rx_ctx *ctx, const l_u8 *frame8, open_l
 	if (addressed == l_false)
 	{
 		return l_false; /* meant for another node, ignore without disturbing ctx */
+	}
+
+	if ((nad == OPEN_LIN_NAD_FUNCTIONAL) && ((pci_type != OPEN_LIN_PCI_SF) || (ctx->active == l_true)))
+	{
+		/* Section 3.2.2: functionally addressed messages are single frames only, and they are ignored
+		 * while a message is being received - without disturbing that reception */
+		return l_false;
 	}
 
 	switch (pci_type)
@@ -609,6 +625,11 @@ void open_lin_transport_layer_handle(open_lin_frame_slot_t *slot)
 	{
 		open_lin_slave_sleep_callback();
 		return;
+	}
+
+	if ((slot->data_ptr[0] == OPEN_LIN_NAD_FUNCTIONAL) && (s_tp_tx_ctx.active == l_true))
+	{
+		return; /* Diagnostic Spec 5.5: a functional request is ignored while a physical response is pending or going out */
 	}
 
 	if (open_lin_tp_rx_feed(&s_tp_rx_ctx, slot->data_ptr, open_lin_NAD, open_lin_hw_get_time_us()) == l_true)

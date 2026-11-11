@@ -137,8 +137,10 @@ typedef enum {
 
 /**
  * @brief Service the application handles itself (UDS-style services such as 0x22 Read Data By Identifier or
- *        0x2E Write Data By Identifier): called for every request whose SID the library has no handler for, when
- *        the request is addressed to this node's own NAD (not the broadcast or functional NAD).
+ *        0x2E Write Data By Identifier): called for every request whose SID the library has no handler for (the
+ *        library handles 0xB0, 0xB1, 0xB2 and 0xB7 itself). The broadcast NAD (0x7F) counts as the node's own NAD,
+ *        answer included (Diagnostic Spec 5.5); a functionally addressed request (NAD 0x7E) is processed too, but
+ *        its response is discarded, whatever the application returns.
  * @param[in]     sid             the request's service id
  * @param[in]     request         the data after the SID
  * @param[in]     request_length  length of request
