@@ -142,35 +142,35 @@ extern l_u8 dataBuffer2[8];
 
 static std::vector<l_u8> g_tx_log; /* everything the stub was asked to transmit, for the event-triggered tests */
 
-l_u8 open_lin_hw_tx_data(l_u8* data, l_u8 len){ /* return type must match open_lin_hw.h's declaration */
-	g_tx_log.insert(g_tx_log.end(), data, data + len);
-	if (sizeof(dataBuffer2) == len)
+/* The response goes out in the background: the stub takes the whole frame (data and checksum) at once, is
+ * "done" at once unless a test holds it back, and its clock is the test's. */
+static l_bool g_tx_hw_done = l_true;
+static l_bool g_tx_hw_start_ok = l_true;
+static l_u32 g_time_us = 0u;
+l_u32 open_lin_hw_get_time_us(){ return g_time_us; }
+l_bool open_lin_hw_tx_is_done(void){ return g_tx_hw_done; }
+
+l_bool open_lin_hw_tx_start(const l_u8 *data, l_u8 len){
+	if (g_tx_hw_start_ok == l_false)
 	{
-		if (memcmp(data,dataBuffer2,len) != 0)
+		return l_false;
+	}
+	g_tx_log.insert(g_tx_log.end(), data, data + len);
+	if (len == sizeof(dataBuffer2) + 1u)
+	{
+		if ((memcmp(data,dataBuffer2,sizeof(dataBuffer2)) != 0) || (data[len - 1u] != 0x22))
 		{
 			tx_invalid = true;
-		}
-
-	} else
-	{
-		if (len == 1)
-		{
-			// checksum
-			if (data[0] != 0x22)
-			{
-				tx_invalid = true;
-			} else
-			{
-				tx_done = true;
-			}
 		} else
 		{
-			tx_invalid = true;
+			tx_done = true;
 		}
+	} else
+	{
+		tx_invalid = true;
 	}
-	return true;
+	return l_true;
 }
-
 TEST_CASE("frame reception, tx header", "[open_lin_slave]" ) {
 	open_lin_slave_reset();
 	sim_break = true;
@@ -275,6 +275,7 @@ TEST_CASE("response_error: set on a forced error, folded into the designated fra
 	open_lin_slave_rx_header(0);
 	open_lin_slave_rx_header(0x55);
 	open_lin_slave_rx_header(0xC1); /* parity(0x01) */
+	open_lin_slave_poll();
 
 	CHECK((dataBuffer2[0] & 0x80) != 0); /* bit folded into the designated byte before tx */
 	CHECK(open_lin_slave_dl_get_response_error() == l_false); /* cleared once that send succeeded */
@@ -284,6 +285,7 @@ TEST_CASE("response_error: set on a forced error, folded into the designated fra
 	open_lin_slave_rx_header(0);
 	open_lin_slave_rx_header(0x55);
 	open_lin_slave_rx_header(0xC1);
+	open_lin_slave_poll();
 
 	CHECK((dataBuffer2[0] & 0x80) == 0); /* a clean send now carries the bit cleared */
 
@@ -318,6 +320,7 @@ TEST_CASE("response_error: set on invalid checksum of an owned RX frame", "[open
 	open_lin_slave_rx_header(0);
 	open_lin_slave_rx_header(0x55);
 	open_lin_slave_rx_header(0xC1);
+	open_lin_slave_poll();
 	tx_invalid = false;
 }
 
@@ -329,6 +332,7 @@ static void send_header(l_u8 id)
 	open_lin_slave_rx_header(0);
 	open_lin_slave_rx_header(0x55);
 	open_lin_slave_rx_header(open_lin_data_layer_parity(id));
+	open_lin_slave_poll(); /* the stub's hardware is done at once */
 }
 
 static void event_test_setup(void)
@@ -451,6 +455,88 @@ TEST_CASE("event frame registry: re-registering replaces, a full table refuses, 
 	open_lin_slave_dl_clear_event_frames();
 	open_lin_slave_dl_event_updated(0x05); /* unknown associated frame: nothing happens */
 	CHECK(open_lin_slave_dl_set_event_frame(0x06, 0x05) == l_true);
+}
+/* ---- Response in the background (open_lin_hw_tx_start / open_lin_slave_poll) ---- */
+static void send_pid_0x01_and_clean_up(void)
+{
+	/* leaves response_error cleared and the TX stub in its default state for whichever test runs next */
+	g_tx_hw_done = l_true;
+	g_tx_hw_start_ok = l_true;
+	open_lin_slave_reset();
+	sim_break = true;
+	open_lin_slave_rx_header(0);
+	open_lin_slave_rx_header(0x55);
+	open_lin_slave_rx_header(0xC1);
+	open_lin_slave_poll();
+	tx_invalid = false;
+	g_tx_log.clear();
+	get_and_clear_sim_error();
+}
+
+TEST_CASE("response in the background: nothing is final until the hardware reports it sent", "[open_lin_slave][tx]")
+{
+	open_lin_slave_dl_set_response_error_frame(0x01, 0, 7);
+	open_lin_slave_dl_debug_force_response_error();
+	g_tx_hw_done = l_false;
+	g_tx_log.clear();
+	get_and_clear_sim_error(); /* whatever an earlier test left behind */
+
+	open_lin_slave_reset();
+	sim_break = true;
+	open_lin_slave_rx_header(0);
+	open_lin_slave_rx_header(0x55);
+	open_lin_slave_rx_header(0xC1);
+
+	CHECK(g_tx_log.size() == sizeof(dataBuffer2) + 1u); /* data and checksum went to the hardware in one piece */
+	open_lin_slave_poll();
+	CHECK(open_lin_slave_dl_get_response_error() == l_true); /* still going out: not reported yet */
+
+	open_lin_slave_rx_header(0x00); /* a byte arriving meanwhile is not an error */
+	CHECK(get_and_clear_sim_error() == OPEN_LIN_NO_ERROR);
+
+	g_tx_hw_done = l_true;
+	open_lin_slave_poll();
+	CHECK(open_lin_slave_dl_get_response_error() == l_false); /* cleared once the send succeeded */
+
+	send_pid_0x01_and_clean_up();
+}
+
+TEST_CASE("response in the background: a transmission that never ends is a transmit error and sets response_error", "[open_lin_slave][tx]")
+{
+	open_lin_slave_dl_set_response_error_frame(0x01, 0, 7);
+	g_tx_hw_done = l_false;
+	g_time_us = 1000u;
+
+	open_lin_slave_reset();
+	sim_break = true;
+	open_lin_slave_rx_header(0);
+	open_lin_slave_rx_header(0x55);
+	open_lin_slave_rx_header(0xC1);
+	open_lin_slave_poll();
+	CHECK(get_and_clear_sim_error() == OPEN_LIN_NO_ERROR);
+
+	g_time_us += OPEN_LIN_SLAVE_TX_TIMEOUT_US + 1u;
+	open_lin_slave_poll();
+	CHECK(get_and_clear_sim_error() == OPEN_LIN_SLAVE_ERROR_HW_TX);
+	CHECK(open_lin_slave_dl_get_response_error() == l_true);
+
+	send_pid_0x01_and_clean_up();
+}
+
+TEST_CASE("response in the background: the hardware refusing to start is a transmit error at once", "[open_lin_slave][tx]")
+{
+	open_lin_slave_dl_set_response_error_frame(0x01, 0, 7);
+	g_tx_hw_start_ok = l_false;
+
+	open_lin_slave_reset();
+	sim_break = true;
+	open_lin_slave_rx_header(0);
+	open_lin_slave_rx_header(0x55);
+	open_lin_slave_rx_header(0xC1);
+	CHECK(get_and_clear_sim_error() == OPEN_LIN_SLAVE_ERROR_HW_TX);
+	CHECK(open_lin_slave_dl_get_response_error() == l_true);
+
+	send_pid_0x01_and_clean_up();
 }
 #ifdef OPEN_LIN_DYNAMIC_IDS
 	open_lin_id_translation_item_t open_lin_id_translation_tab[] = {

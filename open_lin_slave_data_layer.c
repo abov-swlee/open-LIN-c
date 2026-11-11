@@ -54,6 +54,35 @@ static t_slave_event_entry s_events[OPEN_LIN_SLAVE_MAX_EVENT_FRAMES];
 static l_u8 s_event_count = 0u;
 static l_bool s_event_garble = l_false;
 
+/* A response is sent in the background: data and checksum are copied into one buffer the hardware sends in one
+ * go (open_lin_hw_tx_start), and what has to happen once it is out is done by open_lin_slave_poll(). The
+ * receiver stays off while it goes out, so the node does not read its own response. */
+typedef enum
+{
+	SLAVE_TX_NONE,
+	SLAVE_TX_FRAME, /* an ordinary frame of this node */
+	SLAVE_TX_EVENT  /* the response to an event-triggered header */
+} t_slave_tx_kind;
+
+static t_slave_tx_kind s_tx_kind = SLAVE_TX_NONE;
+static open_lin_pid_t s_tx_pid;
+static t_slave_event_entry *s_tx_event = (t_slave_event_entry *)0;
+static l_bool s_tx_garbled = l_false;
+static l_u32 s_tx_started_us = 0u;
+static l_u8 s_tx_stage[OPEN_LIN_MAX_FRAME_LENGTH + 1u];
+
+static l_bool slave_tx_start(const l_u8 *data, l_u8 length, l_u8 checksum)
+{
+	(void)open_lin_memcpy(s_tx_stage, data, length);
+	s_tx_stage[length] = checksum;
+	if (open_lin_hw_tx_start(s_tx_stage, (l_u8)(length + 1u)) == l_false)
+	{
+		return l_false;
+	}
+	s_tx_started_us = open_lin_hw_get_time_us();
+	return l_true;
+}
+
 static t_slave_event_entry *event_by_associated_pid(open_lin_pid_t associated_pid)
 {
 	l_u8 i;
@@ -121,8 +150,9 @@ static l_bool is_event_pid(open_lin_pid_t pid)
 	return l_false;
 }
 
-/* Answer (or stay silent on) a header carrying an event-triggered frame's id */
-static void open_lin_slave_event_response(open_lin_pid_t event_pid)
+/* Answer (or stay silent on) a header carrying an event-triggered frame's id.
+ * @return l_true when a response is on its way (open_lin_slave_poll() finishes it), l_false when the node stays silent */
+static l_bool open_lin_slave_event_response(open_lin_pid_t event_pid)
 {
 	open_lin_frame_slot_t *slot;
 	t_slave_event_entry *entry = (t_slave_event_entry *)0;
@@ -138,12 +168,12 @@ static void open_lin_slave_event_response(open_lin_pid_t event_pid)
 	}
 	if (entry == (t_slave_event_entry *)0)
 	{
-		return; /* none of this node's frames under this event were updated */
+		return l_false; /* none of this node's frames under this event were updated */
 	}
 	slot = open_lin_net_get_slot(entry->associated_pid);
 	if ((slot == OPEN_LIN_NET_SLOT_EMPTY) || (slot->frame_type != OPEN_LIN_FRAME_TYPE_TRANSMIT) || (slot->data_length == 0u))
 	{
-		return;
+		return l_false;
 	}
 
 	open_lin_set_rx_enabled(l_false); /* don't receive our own response */
@@ -155,19 +185,16 @@ static void open_lin_slave_event_response(open_lin_pid_t event_pid)
 		checksum = (l_u8)(checksum ^ 0xFFu);
 	}
 
-	if ((open_lin_hw_tx_data(slot->data_ptr, slot->data_length) == l_false) ||
-	    (open_lin_hw_tx_data(&checksum, (l_u8)sizeof(checksum)) == l_false))
+	if (slave_tx_start(slot->data_ptr, slot->data_length, checksum) == l_false)
 	{
 		open_lin_error_handler(OPEN_LIN_SLAVE_ERROR_HW_TX); /* not counted in response_error, Section 2.7.2 */
-	} else if (s_event_garble == l_true)
-	{
-		s_event_garble = l_false; /* a collision leaves the update pending */
-	} else
-	{
-		entry->updated = l_false;
+		return l_false;
 	}
+	s_tx_kind = SLAVE_TX_EVENT;
+	s_tx_event = entry;
+	s_tx_garbled = s_event_garble;
+	return l_true;
 }
-
 l_bool open_lin_slave_dl_get_response_error(void)
 {
 	return s_response_error;
@@ -210,6 +237,7 @@ void open_lin_slave_init(void)
 }
 
 void open_lin_slave_reset(void){
+	s_tx_kind = SLAVE_TX_NONE;
 	open_lin_slave_set_state(OPEN_LIN_SLAVE_IDLE);
 	open_lin_slave_state_data_count = 0;
 	open_lin_set_rx_enabled(l_true);
@@ -224,6 +252,7 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 	{
 		if (open_lin_slave_state != OPEN_LIN_SLAVE_IDLE)
 		{
+			s_tx_kind = SLAVE_TX_NONE; /* a response still going out is abandoned: the master started over */
 			open_lin_error_handler(OPEN_LIN_SLAVE_ERROR_INVALID_BREAK); /* break should be received only in IDLE state */
 		} else {
 			/* do nothing, go to SYNC rx anyway*/
@@ -268,8 +297,14 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 
 				if (is_event_pid(open_lin_data_layer_frame.pid) == l_true)
 				{
-					open_lin_slave_event_response(open_lin_data_layer_frame.pid);
-					open_lin_slave_reset();
+					if (open_lin_slave_event_response(open_lin_data_layer_frame.pid) == l_true)
+					{
+						/* open_lin_slave_poll() ends it once the response is out */
+						open_lin_slave_set_state(OPEN_LIN_SLAVE_DATA_TX);
+					} else
+					{
+						open_lin_slave_reset();
+					}
 					break;
 				}
 
@@ -297,30 +332,17 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 						}
 
 						open_lin_data_layer_frame.checksum = open_lin_data_layer_checksum(open_lin_data_layer_frame.pid, open_lin_data_layer_frame.checksum_type,
-																open_lin_data_layer_frame.length, open_lin_data_layer_frame.data_ptr);
-						if ((open_lin_hw_tx_data(open_lin_data_layer_frame.data_ptr, open_lin_data_layer_frame.length) == l_false) ||
-						   (open_lin_hw_tx_data(&open_lin_data_layer_frame.checksum, (l_u8)sizeof(open_lin_data_layer_frame.checksum)) == l_false))
+															open_lin_data_layer_frame.length, open_lin_data_layer_frame.data_ptr);
+						if (slave_tx_start(open_lin_data_layer_frame.data_ptr, open_lin_data_layer_frame.length, open_lin_data_layer_frame.checksum) == l_false)
 						{
 							open_lin_error_handler(OPEN_LIN_SLAVE_ERROR_HW_TX);
 							s_response_error = l_true; /* Section 2.7.3: error transmitting a frame this node owns */
 							open_lin_slave_reset();
 							break;
-						} else
-						{
-							if (s_response_error_frame_configured && (open_lin_data_layer_frame.pid == s_response_error_pid))
-							{
-								s_response_error = l_false; /* Section 2.7.3: cleared once reported successfully */
-							}
-							{
-								t_slave_event_entry *sent = event_by_associated_pid(open_lin_data_layer_frame.pid);
-								if (sent != (t_slave_event_entry *)0)
-								{
-									sent->updated = l_false; /* Section 2.3.3.2: sent as an ordinary frame, the signal is no longer updated */
-								}
-							}
-							open_lin_slave_reset();
-							break;
 						}
+						/* in the background from here: open_lin_slave_poll() ends it once the response is out */
+						s_tx_kind = SLAVE_TX_FRAME;
+						s_tx_pid = open_lin_data_layer_frame.pid;
 						break;
 					}
 				} else
@@ -331,6 +353,12 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 				}
 				break;
 			}
+			case (OPEN_LIN_SLAVE_DATA_TX):
+			{
+				/* the response is going out in the background, nothing is to be received meanwhile */
+				break;
+			}
+
 			case (OPEN_LIN_SLAVE_DATA_RX):
 			{
 				if (open_lin_slave_state_data_count < open_lin_data_layer_frame.length)
@@ -364,6 +392,63 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 			}
 		}
 	}
+}
+
+void open_lin_slave_poll(void)
+{
+	l_bool sent;
+
+	if (s_tx_kind == SLAVE_TX_NONE)
+	{
+		return;
+	}
+
+	if (open_lin_hw_tx_is_done() == l_true)
+	{
+		sent = l_true;
+	} else if ((open_lin_hw_get_time_us() - s_tx_started_us) > OPEN_LIN_SLAVE_TX_TIMEOUT_US)
+	{
+		sent = l_false;
+	} else
+	{
+		return; /* still going out */
+	}
+
+	if (s_tx_kind == SLAVE_TX_FRAME)
+	{
+		if (sent == l_true)
+		{
+			if (s_response_error_frame_configured && (s_tx_pid == s_response_error_pid))
+			{
+				s_response_error = l_false; /* Section 2.7.3: cleared once reported successfully */
+			}
+			{
+				t_slave_event_entry *sent_entry = event_by_associated_pid(s_tx_pid);
+				if (sent_entry != (t_slave_event_entry *)0)
+				{
+					sent_entry->updated = l_false; /* Section 2.3.3.2: sent as an ordinary frame, the signal is no longer updated */
+				}
+			}
+		} else
+		{
+			open_lin_error_handler(OPEN_LIN_SLAVE_ERROR_HW_TX);
+			s_response_error = l_true; /* Section 2.7.3: error transmitting a frame this node owns */
+		}
+	} else
+	{
+		if (sent == l_false)
+		{
+			open_lin_error_handler(OPEN_LIN_SLAVE_ERROR_HW_TX); /* not counted in response_error, Section 2.7.2 */
+		} else if (s_tx_garbled == l_true)
+		{
+			s_event_garble = l_false; /* a collision leaves the update pending */
+		} else
+		{
+			s_tx_event->updated = l_false;
+		}
+	}
+
+	open_lin_slave_reset();
 }
 
 void open_lin_slave_set_state_callback(void (*callback)(t_open_lin_slave_state new_state))

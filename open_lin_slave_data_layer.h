@@ -31,6 +31,18 @@ void open_lin_slave_reset(void);
  */
 void open_lin_slave_rx_header(l_u8 rx_byte);
 
+/** @brief How long a response may take to go out before it is counted as a transmit error. */
+#ifndef OPEN_LIN_SLAVE_TX_TIMEOUT_US
+#define OPEN_LIN_SLAVE_TX_TIMEOUT_US 20000u
+#endif
+
+/**
+ * @brief Call it repeatedly. A response to a header is sent in the background (open_lin_hw_tx_start()),
+ *        the slave stays in the DATA_TX state meanwhile; once the hardware reports it done (or the
+ *        timeout passed) this finishes it - response_error and event-triggered bookkeeping, then back
+ *        to IDLE. Does nothing while no response is going out.
+ */
+void open_lin_slave_poll(void);
 void open_lin_slave_set_state_callback(void (*callback)(t_open_lin_slave_state new_state));
 
 /**
