@@ -29,7 +29,12 @@ typedef struct {
 
 open_lin_frame_slot_t* open_lin_net_get_slot(open_lin_pid_t pid);
 void open_lin_net_rx_handler(open_lin_pid_t pid);
-void open_lin_net_tx_handler(open_lin_pid_t pid);
+/**
+ * @brief Lets the application fill the data of a frame this node is about to send.
+ * @return l_false when the node has nothing to send for this frame and must stay silent (a diagnostic
+ *         response frame, 0x3D, while no response is pending); l_true otherwise.
+ */
+l_bool open_lin_net_tx_handler(open_lin_pid_t pid);
 void open_lin_net_init(open_lin_frame_slot_t *a_slot_array, l_u8 a_slot_array_len);
 void open_lin_on_rx_frame(open_lin_frame_slot_t *slot);
 void open_lin_on_tx_frame(open_lin_frame_slot_t *slot);

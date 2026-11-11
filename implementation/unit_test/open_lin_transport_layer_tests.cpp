@@ -1263,6 +1263,49 @@ TEST_CASE("handler: a response being sent in several frames stops when a request
 	expect_idle_response(); /* the rest of the response is dropped */
 	open_lin_transport_layer_set_user_service(0);
 }
+/* ---- open_lin_transport_layer_handle_tx() says whether there is a response frame to send (Diagnostic Spec 5.5) ---- */
+TEST_CASE("handle_tx: no response pending means no frame to send", "[open_lin_transport_layer][tp][handler][silent]") {
+	open_lin_NAD = 0x01;
+	open_lin_transport_layer_set_user_service(0);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	/* an earlier test may have left a response behind: take whatever is pending first */
+	while (open_lin_transport_layer_handle_tx(&resp_slot) == l_true) {}
+	CHECK(open_lin_transport_layer_handle_tx(&resp_slot) == l_false);
+}
+
+TEST_CASE("handle_tx: every frame of a response is reported, then silence", "[open_lin_transport_layer][tp][handler][silent]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 10u, 0u); /* FF + CF */
+
+	uint8_t req[8] = {0x01, 0x03, 0x22, 0xF1, 0x00, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	CHECK(open_lin_transport_layer_handle_tx(&resp_slot) == l_true);  /* FF */
+	CHECK(open_lin_transport_layer_handle_tx(&resp_slot) == l_true);  /* CF */
+	CHECK(open_lin_transport_layer_handle_tx(&resp_slot) == l_false); /* done: the next header is not answered */
+	open_lin_transport_layer_set_user_service(0);
+}
+
+TEST_CASE("handle_tx: a response discarded for being late is not answered with an idle frame", "[open_lin_transport_layer][tp][handler][silent]") {
+	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
+	s_fake_time_us = 1000u;
+
+	uint8_t req[8] = {0x01, 0x03, 0x22, 0xF1, 0x01, 0xFF, 0xFF, 0xFF};
+	open_lin_frame_slot_t req_slot = {OPEN_LIN_DIAG_REQUEST, OPEN_LIN_FRAME_TYPE_RECEIVE, 8, req};
+	open_lin_transport_layer_handle(&req_slot);
+
+	s_fake_time_us += OPEN_LIN_MASTER_DIAG_P2_MAX_US + 1u;
+	uint8_t resp[8];
+	open_lin_frame_slot_t resp_slot = {OPEN_LIN_DIAG_RESPONSE, OPEN_LIN_FRAME_TYPE_TRANSMIT, 8, resp};
+	CHECK(open_lin_transport_layer_handle_tx(&resp_slot) == l_false);
+	CHECK(s_last_error == OPEN_LIN_SLAVE_ERROR_RESPONSE_DISCARDED);
+	open_lin_transport_layer_set_user_service(0);
+	s_fake_time_us = 0u;
+}
 TEST_CASE("user service: a service the library handles itself is not handed over", "[open_lin_transport_layer][tp][user]") {
 	user_service_setup(OPEN_LIN_SID_RESULT_POSITIVE, 3u, 0u);
 	open_lin_supplier_id = 0x1234;

@@ -22,7 +22,9 @@ extern void open_lin_frame_byte_process(l_u8 rx_byte);
  * for non-diagnostic TRANSMIT slots (open_lin_on_rx_frame is already
  * provided by open_lin_frame_winOS.c). */
 void open_lin_transport_layer_handle(open_lin_frame_slot_t *slot) { (void)slot; }
-void open_lin_transport_layer_handle_tx(open_lin_frame_slot_t *slot) { (void)slot; }
+/* whether the stand-in transport layer has a diagnostic response to send; the network layer asks through this */
+l_bool g_diag_response_pending = l_false;
+l_bool open_lin_transport_layer_handle_tx(open_lin_frame_slot_t *slot) { (void)slot; return g_diag_response_pending; }
 void open_lin_on_tx_frame(open_lin_frame_slot_t *slot) { (void)slot; }
 
 l_u8 dataBuffer1[] = {0,0,0,0};
@@ -30,6 +32,7 @@ l_u8 dataBuffer2[] = {0,1,2,3,4,5,6,7};
 l_u8 dataBuffer3[] = {0,0,0};
 l_u8 dataBuffer4[] = {0};
 l_u8 dataBuffer5[] = {0,0}; /* event-triggered frame's associated TX frame: byte 0 is reserved for its protected id */
+l_u8 dataBuffer6[] = {0,0,0,0,0,0,0,0}; /* diagnostic response */
 
 open_lin_frame_slot_t slot_array[] =
 {
@@ -37,7 +40,8 @@ open_lin_frame_slot_t slot_array[] =
 		{0x01,OPEN_LIN_FRAME_TYPE_TRANSMIT,sizeof(dataBuffer2),dataBuffer2},
 		{OPEN_LIN_DIAG_REQUEST,OPEN_LIN_FRAME_TYPE_RECEIVE,sizeof(dataBuffer3),dataBuffer3},
 		{0x08,OPEN_LIN_FRAME_TYPE_RECEIVE,sizeof(dataBuffer4),dataBuffer4,OPEN_LIN_CHECKSUM_CLASSIC},
-		{0x05,OPEN_LIN_FRAME_TYPE_TRANSMIT,sizeof(dataBuffer5),dataBuffer5}
+		{0x05,OPEN_LIN_FRAME_TYPE_TRANSMIT,sizeof(dataBuffer5),dataBuffer5},
+		{OPEN_LIN_DIAG_RESPONSE,OPEN_LIN_FRAME_TYPE_TRANSMIT,sizeof(dataBuffer6),dataBuffer6}
 };
 
 
@@ -537,6 +541,46 @@ TEST_CASE("response in the background: the hardware refusing to start is a trans
 	CHECK(open_lin_slave_dl_get_response_error() == l_true);
 
 	send_pid_0x01_and_clean_up();
+}
+/* ---- Diagnostic Spec 5.5: a slave response header is answered only while a response is pending ---- */
+static void send_diag_response_header(void)
+{
+	open_lin_slave_reset();
+	sim_break = true;
+	open_lin_slave_rx_header(0);
+	open_lin_slave_rx_header(0x55);
+	open_lin_slave_rx_header(open_lin_data_layer_parity(OPEN_LIN_DIAG_RESPONSE));
+	open_lin_slave_poll();
+}
+
+TEST_CASE("slave response header with no response pending: the node stays silent", "[open_lin_slave][diag]")
+{
+	g_diag_response_pending = l_false;
+	g_tx_log.clear();
+	get_and_clear_sim_error();
+
+	send_diag_response_header();
+	CHECK(g_tx_log.empty()); /* nothing went out, no idle frame either */
+
+	sim_break = true;
+	open_lin_slave_rx_header(0); /* back in IDLE: a break is accepted without INVALID_BREAK */
+	CHECK(get_and_clear_sim_error() == OPEN_LIN_NO_ERROR);
+	open_lin_slave_reset();
+}
+
+TEST_CASE("slave response header with a response pending: the node answers with data and checksum", "[open_lin_slave][diag]")
+{
+	g_diag_response_pending = l_true;
+	g_tx_log.clear();
+	get_and_clear_sim_error();
+
+	send_diag_response_header();
+	CHECK(g_tx_log.size() == sizeof(dataBuffer6) + 1u);
+
+	g_diag_response_pending = l_false;
+	tx_invalid = false;
+	g_tx_log.clear();
+	open_lin_slave_reset();
 }
 #ifdef OPEN_LIN_DYNAMIC_IDS
 	open_lin_id_translation_item_t open_lin_id_translation_tab[] = {

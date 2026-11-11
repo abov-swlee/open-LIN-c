@@ -177,7 +177,7 @@ static l_bool open_lin_slave_event_response(open_lin_pid_t event_pid)
 	}
 
 	open_lin_set_rx_enabled(l_false); /* don't receive our own response */
-	open_lin_net_tx_handler(entry->associated_pid);
+	(void)open_lin_net_tx_handler(entry->associated_pid);
 	slot->data_ptr[0] = open_lin_data_layer_parity(entry->associated_pid);
 	checksum = open_lin_data_layer_checksum(event_pid, slot->checksum_type, slot->data_length, slot->data_ptr);
 	if (s_event_garble == l_true)
@@ -313,7 +313,12 @@ void open_lin_slave_rx_header(l_u8 rx_byte)
 					if (open_lin_slave_state == OPEN_LIN_SLAVE_DATA_TX)
 					{
 						open_lin_set_rx_enabled(l_false); // Prevent receiving data transmitted by itself(Slave)
-						open_lin_net_tx_handler(open_lin_data_layer_frame.pid);
+						if (open_lin_net_tx_handler(open_lin_data_layer_frame.pid) == l_false)
+						{
+							/* nothing to send for this header (a diagnostic response while none is pending): stay silent */
+							open_lin_slave_reset();
+							break;
+						}
 
 						/* Section 2.7.3: fold the current response_error status into the
 						 * designated frame's data, after the app fills it but before the

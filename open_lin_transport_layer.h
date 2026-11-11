@@ -171,8 +171,12 @@ l_bool open_lin_tp_tx_next(t_open_lin_tp_tx_ctx *ctx, open_lin_NAD_t nad, l_u8 *
 /** @brief Feed an incoming 0x3C (master request) frame - hooked from the network layer. */
 void open_lin_transport_layer_handle(open_lin_frame_slot_t *slot);
 
-/** @brief Fill an outgoing 0x3D (slave response) frame - hooked from the network layer. */
-void open_lin_transport_layer_handle_tx(open_lin_frame_slot_t *slot);
+/**
+ * @brief Fill an outgoing 0x3D (slave response) frame - hooked from the network layer.
+ * @return l_true when a response frame was filled in, l_false when there is no response to send (none pending, or
+ *         it was discarded): the node must not answer the header then (Diagnostic Spec 5.5), the frame is left idle.
+ */
+l_bool open_lin_transport_layer_handle_tx(open_lin_frame_slot_t *slot);
 
 /**
  * @brief Master side: originate a diagnostic request (SID/data), segmented as needed.

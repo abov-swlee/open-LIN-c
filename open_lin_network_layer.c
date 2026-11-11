@@ -76,14 +76,14 @@ void open_lin_net_rx_handler(open_lin_pid_t pid) {
 	open_lin_on_rx_frame(slot);
 };
 
-void open_lin_net_tx_handler(open_lin_pid_t pid) {
+l_bool open_lin_net_tx_handler(open_lin_pid_t pid) {
 	open_lin_frame_slot_t* slot = open_lin_net_get_slot(pid);
 #ifdef OPEN_LIN_TRANSPORT_LAYER
 	if (pid == OPEN_LIN_DIAG_RESPONSE)
 	{
-		open_lin_transport_layer_handle_tx(slot);
-		return;
+		return open_lin_transport_layer_handle_tx(slot);
 	}
 #endif
 	open_lin_on_tx_frame(slot);
+	return l_true;
 }

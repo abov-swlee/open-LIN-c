@@ -652,26 +652,31 @@ void open_lin_transport_layer_handle(open_lin_frame_slot_t *slot)
 	}
 }
 
-void open_lin_transport_layer_handle_tx(open_lin_frame_slot_t *slot)
+l_bool open_lin_transport_layer_handle_tx(open_lin_frame_slot_t *slot)
 {
+	l_bool pending;
+
 	if ((slot == OPEN_LIN_NET_SLOT_EMPTY) || (slot->pid != OPEN_LIN_DIAG_RESPONSE))
 	{
 		/* diagnostic response slot not registered by the app, or wrong slot - nothing to do */
-		return;
+		return l_false;
 	}
 
 	if ((s_tp_tx_ctx.active == l_true) && (s_tp_tx_ctx.sent_len == 0u) &&
-	    ((l_u32)(open_lin_hw_get_time_us() - s_tp_response_ready_us) > s_tp_response_window_us))
+		((l_u32)(open_lin_hw_get_time_us() - s_tp_response_ready_us) > s_tp_response_window_us))
 	{
 		/* Diagnostic Spec 5.6: too late, the master has stopped waiting for this response - drop it
-		 * (this slot goes out idle) rather than have it show up as the answer to a later request. */
+		 * (this slot goes unanswered) rather than have it show up as the answer to a later request. */
 		s_tp_tx_ctx.active = l_false;
 		open_lin_error_handler(OPEN_LIN_SLAVE_ERROR_RESPONSE_DISCARDED);
 	}
 
+	/* Diagnostic Spec 5.5: with no response pending the node does not answer a slave response header at all;
+	 * the frame is still filled (idle, 0xFF) so nothing stale is left in it */
+	pending = s_tp_tx_ctx.active;
 	(void)open_lin_tp_tx_next(&s_tp_tx_ctx, s_tp_response_nad, slot->data_ptr);
+	return pending;
 }
-
 l_bool open_lin_master_diag_request(open_lin_NAD_t nad, const l_u8 *msg, l_u16 len)
 {
 	if (s_master_tp_tx_ctx.active == l_true)
