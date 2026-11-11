@@ -414,8 +414,10 @@ l_bool open_lin_hw_tx_is_done(void)
 l_u8 open_lin_hw_rx_count(void)
 {
 #if USART_LIN
-    /* the USART HAL has no running count: the bytes are only known once the whole frame is in */
-    return s_bRxDone ? s_rx_len : 0u;
+    uint32_t count = 0u;
+
+    (void)HAL_USART_GetRxCount(USART_ID_1, &count);
+    return (count > s_rx_len) ? s_rx_len : (l_u8)count;
 #else
     uint32_t count = 0u;
 
