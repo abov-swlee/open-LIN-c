@@ -51,6 +51,14 @@ volatile bool s_bBreakDetect;
 static volatile bool s_bRxDone;
 static volatile bool s_bTxDone;
 
+/* Whoever needs to know when a break arrives (an RTOS task that sleeps between frames) registers here. */
+static void (* volatile s_pfnBreakCallback)(void);
+
+void open_lin_hw_set_break_callback(void (*callback)(void))
+{
+    s_pfnBreakCallback = callback;
+}
+
 static void PRV_LinTimer_IRQHandler(uint32_t un32Event, void *pContext)
 {
     if (un32Event & TIMER1_EVENT_PERIODIC_MATCH)
@@ -62,6 +70,18 @@ static void PRV_LinTimer_IRQHandler(uint32_t un32Event, void *pContext)
 static void PRV_LinUart_IRQHandler(uint32_t un32Event, void *pContext)
 {
 #if USART_LIN
+    if(un32Event & USART_EVENT_LIN_BREAK)
+    {
+        s_bBreakDetect = true;
+#if defined(PRINT_BREAK_SIGNAL)
+        printf(COLOR_GREEN"LIN signal detected.\n"COLOR_RESET);
+#endif
+        if(s_pfnBreakCallback != NULL)
+        {
+            s_pfnBreakCallback();
+        }
+    }
+
     if(un32Event & USART_EVENT_RX_DONE)
     {
         s_bRxDone = true;
@@ -221,24 +241,13 @@ void open_lin_set_rx_enabled(l_bool v)
 
 l_bool open_lin_hw_check_for_break(void)
 {
-#if USART_LIN
-    if(s_bBreakDetect == false)
-    {
-        s_bBreakDetect = GET_BIT(USART11,USART1n,CR3,RXBRKnIFLAG);
-        if(s_bBreakDetect)
-        {
-            SET_BIT(USART11,true,USART1n,CR3,RXBRKnIFLAG);
-#if defined(PRINT_BREAK_SIGNAL)
-            printf(COLOR_GREEN"LIN signal detected.\n"COLOR_RESET);
-#endif
-        }
-    }
-#else
+#if !USART_LIN
     if(s_bBreakDetect == false)
     {
         SET_BIT(UART1,true,UART,IER,RLSIE);
     }
 #endif
+    /* set by the interrupt (USART: the HAL reports the break, PRV_LinUart_IRQHandler()) */
     return s_bBreakDetect;
 }
 

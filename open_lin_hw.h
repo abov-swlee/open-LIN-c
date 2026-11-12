@@ -18,6 +18,14 @@
 l_bool open_lin_hw_check_for_break(void);
 
 /**
+ * @brief Registers a function that is called, in interrupt context, when the hardware reports a break by an
+ *        interrupt. An environment that sleeps between frames uses it to wake the task that calls the
+ *        library; open_lin_hw_check_for_break() reports the break as before. NULL (the default) registers
+ *        nothing. Call it before the break can arrive, e.g. before the scheduler starts.
+ */
+void open_lin_hw_set_break_callback(void (*callback)(void));
+
+/**
  * @brief resets hardware to default state
  *
  * @return @c true is break is detected
