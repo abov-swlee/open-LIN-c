@@ -50,6 +50,10 @@ static volatile uint32_t s_un32TimeHigh;
 volatile bool s_bBreakDetect;
 static volatile bool s_bRxDone;
 static volatile bool s_bTxDone;
+static volatile bool s_bTxBreakDone;
+
+/* upper bound of the wait for the transmit break event of the USART (the break lasts about 1 ms with the delimiter) */
+#define LIN_TX_BREAK_WAIT_MAX_MS 5u
 
 /* Whoever needs to know when a break arrives (an RTOS task that sleeps between frames) registers here. */
 static void (* volatile s_pfnBreakCallback)(void);
@@ -91,14 +95,22 @@ static void PRV_LinUart_IRQHandler(uint32_t un32Event, void *pContext)
     {
         s_bTxDone = true;
     }
+
+    if(un32Event & USART_EVENT_TX_LIN_BREAK)
+    {
+        s_bTxBreakDone = true;
+    }
 #else
     if(un32Event & UART_EVENT_BREAK_ERROR)
     {
-        SET_BIT(UART1,false,UART,IER,RLSIE);
         s_bBreakDetect = true;
 #if defined(PRINT_BREAK_SIGNAL)
         printf(COLOR_GREEN"LIN signal detected.\n"COLOR_RESET);
 #endif
+        if(s_pfnBreakCallback != NULL)
+        {
+            s_pfnBreakCallback();
+        }
     }
 
     if(un32Event & UART_EVENT_RX_DONE)
@@ -216,7 +228,7 @@ void open_lin_hw_reset(void)
         .eData = UART_DATA_8,
         .eParity = UART_PARITY_NONE,
         .eStop = UART_STOP_1,
-        .bIntrLSEnable = false
+        .bIntrLSEnable = true /* the break is reported by the line status interrupt, which stays on */
     };
 
     HAL_PCU_SetAltMode(PCU_ID_B, PCU_PIN_ID_6, PCU_ALT_1);
@@ -241,33 +253,32 @@ void open_lin_set_rx_enabled(l_bool v)
 
 l_bool open_lin_hw_check_for_break(void)
 {
-#if !USART_LIN
-    if(s_bBreakDetect == false)
-    {
-        SET_BIT(UART1,true,UART,IER,RLSIE);
-    }
-#endif
-    /* set by the interrupt (USART: the HAL reports the break, PRV_LinUart_IRQHandler()) */
+    /* set by the interrupt: the HAL reports the break (USART: USART_EVENT_LIN_BREAK, UART: UART_EVENT_BREAK_ERROR) to PRV_LinUart_IRQHandler() */
     return s_bBreakDetect;
 }
 
 l_bool open_lin_hw_tx_break(void)
 {
 #if USART_LIN
-    bool result = false;
+    uint32_t un32Wait;
 
-    SET_BIT(USART11,true,USART1n,CR3,TXBRKn);
-    while(!GET_BIT(USART11,USART1n,CR3,TXBRKnIFLAG))
+    /* USART_EVENT_TX_LIN_BREAK arrives ~0.3 ms after the start, before the end of the break (~0.68 ms), so
+     * the next byte must not follow it directly: the wait is done in steps of 1 ms, which also covers the
+     * break and its delimiter. The bound keeps the caller from hanging if the event never comes. */
+    s_bTxBreakDone = false;
+    if(HAL_USART_SetLinBreak(USART_ID_1) != HAL_ERR_OK)
     {
-        SET_BIT(USART11,true,USART1n,CR3,TXBRKnIFLAG);
-        result = true;
-        Delay(1000);
-#if defined(PRINT_BREAK_SIGNAL)
-        printf(COLOR_GREEN"LIN signal generated.\n"COLOR_RESET);
-#endif
-        break;
+        return false;
     }
-    return result;
+
+    for(un32Wait = 0u; (un32Wait < LIN_TX_BREAK_WAIT_MAX_MS) && !s_bTxBreakDone; un32Wait++)
+    {
+        Delay(1000);
+    }
+#if defined(PRINT_BREAK_SIGNAL)
+    printf(COLOR_GREEN"LIN signal generated.\n"COLOR_RESET);
+#endif
+    return (s_bTxBreakDone ? true : false);
 #else
     // ALT : UART -> GPIO
     HAL_PCU_SetAltMode(PCU_ID_B, PCU_PIN_ID_6, PCU_ALT_0);
