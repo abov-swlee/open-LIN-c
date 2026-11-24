@@ -47,7 +47,7 @@
 static volatile uint32_t s_un32TimeHigh;
 
 /* set from the UART IRQ and polled by the main loop: must be volatile, or -O2/-O3 may hoist the read out of the wait loops */
-volatile bool s_bBreakDetect;
+static volatile bool s_bBreakDetect;
 static volatile bool s_bRxDone;
 static volatile bool s_bTxDone;
 static volatile bool s_bTxBreakDone;
@@ -255,6 +255,11 @@ l_bool open_lin_hw_check_for_break(void)
 {
     /* set by the interrupt: the HAL reports the break (USART: USART_EVENT_LIN_BREAK, UART: UART_EVENT_BREAK_ERROR) to PRV_LinUart_IRQHandler() */
     return s_bBreakDetect;
+}
+
+void open_lin_hw_clear_break(void)
+{
+    s_bBreakDetect = false;
 }
 
 l_bool open_lin_hw_tx_break(void)

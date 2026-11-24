@@ -31,6 +31,11 @@ l_bool open_lin_hw_check_for_break(void)
 	return result;
 }
 
+void open_lin_hw_clear_break(void)
+{
+	/* the break is reported once, open_lin_hw_check_for_break() clears the flag */
+}
+
 void open_lin_frame_set_auto_baud(void)
 {
 	//	UART_AUTOBAUD_REQUEST

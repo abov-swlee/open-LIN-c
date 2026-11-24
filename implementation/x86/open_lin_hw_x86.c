@@ -43,6 +43,11 @@ l_bool open_lin_hw_check_for_break(void)
 	return result;
 }
 
+void open_lin_hw_clear_break(void)
+{
+	/* the break is reported once, open_lin_hw_check_for_break() clears the flag */
+}
+
 l_bool open_lin_hw_tx_break(void){
 	RS232_setBreak(cport_nr);
 	Sleep(2);

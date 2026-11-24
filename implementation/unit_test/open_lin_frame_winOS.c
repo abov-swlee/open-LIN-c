@@ -37,6 +37,11 @@ l_bool open_lin_hw_check_for_break(void)
 	return res;
 }
 
+void open_lin_hw_clear_break(void)
+{
+	/* the break is reported once, open_lin_hw_check_for_break() clears the flag */
+}
+
 uint8_t lasttx[255];
 uint8_t tx_index;
 

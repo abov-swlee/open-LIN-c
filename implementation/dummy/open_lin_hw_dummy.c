@@ -15,6 +15,10 @@ l_bool open_lin_hw_check_for_break(void)
     return false;
 }
 
+void open_lin_hw_clear_break(void)
+{
+}
+
 l_bool open_lin_hw_tx_break(void)
 {
     return false;

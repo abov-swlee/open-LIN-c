@@ -18,6 +18,12 @@
 l_bool open_lin_hw_check_for_break(void);
 
 /**
+ * @brief Forgets a break that open_lin_hw_check_for_break() still reports, because the caller has dealt with it.
+ *        A hardware layer that reports a break only once (it clears the flag when it is read) does nothing here.
+ */
+void open_lin_hw_clear_break(void);
+
+/**
  * @brief Registers a function that is called, in interrupt context, when the hardware reports a break by an
  *        interrupt. An environment that sleeps between frames uses it to wake the task that calls the
  *        library; open_lin_hw_check_for_break() reports the break as before. NULL (the default) registers
