@@ -245,9 +245,9 @@ void open_lin_hw_reset(void)
 void open_lin_set_rx_enabled(l_bool v)
 {
 #if USART_LIN
-    SET_BIT(USART11,v,USART1n,CR1,RXEn);
+    (void)HAL_USART_SetReceiveEnable(USART_ID_1, (v == l_true));
 #else
-    SET_BIT(UART1,v,UART,IER,DRIE);
+    (void)HAL_UART_SetReceiveEnable(UART_ID_1, (v == l_true));
 #endif
 }
 
