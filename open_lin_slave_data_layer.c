@@ -193,6 +193,12 @@ static l_bool open_lin_slave_event_response(open_lin_pid_t event_pid)
 	s_tx_kind = SLAVE_TX_EVENT;
 	s_tx_event = entry;
 	s_tx_garbled = s_event_garble;
+	if (s_tx_garbled == l_false)
+	{
+		/* The data is copied: an update the application flags from here on is a new one and must not be cleared
+		 * when this response is out. (A garbled response, the collision test, leaves the update pending.) */
+		entry->updated = l_false;
+	}
 	return l_true;
 }
 l_bool open_lin_slave_dl_get_response_error(void)
@@ -444,12 +450,10 @@ void open_lin_slave_poll(void)
 		if (sent == l_false)
 		{
 			open_lin_error_handler(OPEN_LIN_SLAVE_ERROR_HW_TX); /* not counted in response_error, Section 2.7.2 */
+			s_tx_event->updated = l_true; /* not sent: the update stays pending (it was cleared when the response started) */
 		} else if (s_tx_garbled == l_true)
 		{
-			s_event_garble = l_false; /* a collision leaves the update pending */
-		} else
-		{
-			s_tx_event->updated = l_false;
+			s_event_garble = l_false; /* a collision leaves the update pending (not cleared when the response started) */
 		}
 	}
 
